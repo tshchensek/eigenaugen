@@ -1,0 +1,5 @@
+# https://docs.astral.sh/ruff/configuration/
+# ruff also formats code blocks in Markdown; keep agent instructions verbatim.
+extend-exclude = ["AGENTS.md"]
+# Honor excludes even when a file is passed explicitly (editors, hooks).
+force-exclude = true

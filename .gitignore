@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# editors
+.idea/
+.vscode/
+*.sw[op]
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# tooling
+.ruff_cache/
+.pytest_cache/
