@@ -23,7 +23,7 @@ When referencing built-in language functions or package APIs, always include a m
 * DRY: don't repeat yourself
 * Abstract magic strings and numbers into named constants or StrEnums as appropriate
   - Good: `cache.set_ttl(MAX_TTL)`, `return output[:MAX_LENGTH]`, `order.set_status(ORDER_STATUS.pending)`
-  - Bad: `cache.set_ttl(3600)`, `return output[1000]`, `order.set_status('pending')`
+  - Bad: `cache.set_ttl(3600)`, `return output[:1000]`, `order.set_status('pending')`
 * Look up documentation if you're unfamiliar with the requested feature; you have tools like web search.
 * Don't guess about unknown functionality; if you don't know how something works, look it up or ask for clarification.
 * Do not use fancy characters like em/en dashes, curly quotes, or arrows in print/log lines, titles, descriptions, etc. unless specifically told to. em dash is ---. en dash is --.
