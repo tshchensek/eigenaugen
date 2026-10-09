@@ -7,9 +7,9 @@
 #   * Claude Code CLI (official native installer)
 #   * gh, the GitHub CLI (brew)
 #   * jq, yq, shellcheck for ./scripts/lintme.sh (brew; macOS 15+ ships jq)
-#   * pyenv (brew) + its suggested build deps + shell init in your profile
-#   * Python from .python-version (pyenv) + .venv
-#   * ruff, pytest (pip into .venv, pinned in requirements.txt)
+#   * uv, the Python version and package manager (brew)
+#   * Python from .python-version (uv-managed, prebuilt) + .venv
+#   * ruff, pytest (uv pip into .venv, pinned in requirements.txt)
 #   * the eigenaugen command in ~/.local/bin, which goes on PATH
 set -eu
 
@@ -23,10 +23,7 @@ set -eu
 HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
 CLAUDE_INSTALL_URL="https://claude.ai/install.sh"
 INSTALL_SCRIPT="$PROJECT_ROOT/scripts/install.sh"
-PYENV_DOCS_URL="https://github.com/pyenv/pyenv#b-set-up-your-shell-environment-for-pyenv"
 BREW_PREFIXES="/opt/homebrew /usr/local"
-# https://github.com/pyenv/pyenv/wiki#suggested-build-environment
-PYENV_BUILD_DEPS="openssl@3 readline sqlite xz tcl-tk@8 libb2 zstd zlib pkgconf"
 PYTHON_VERSION_FILE="$PROJECT_ROOT/.python-version"
 REQUIREMENTS="$PROJECT_ROOT/requirements.txt"
 VENV_DIR="$PROJECT_ROOT/.venv"
@@ -53,11 +50,11 @@ WHAT IT DOES
   3. Install gh (GitHub CLI) via brew.
   4. Install $LINT_TOOLS via brew, unless already on PATH (macOS 15+
      ships /usr/bin/jq).
-  5. Install pyenv + its suggested build deps via brew, and add pyenv
-     init to your shell profile.
-  6. Install the Python version in .python-version via pyenv.
+  5. Install uv via brew.
+  6. Install the Python version in .python-version via uv (prebuilt;
+     nothing compiles).
   7. Create .venv from that Python and install requirements.txt
-     (ruff, pytest).
+     (ruff, pytest) via uv.
   8. Run scripts/install.sh: install the eigenaugen command into
      $LOCAL_BIN and, if $LOCAL_BIN is not on PATH, add it in the
      login shell's startup file.
@@ -83,16 +80,6 @@ done
 [ "$(uname)" = "Darwin" ] || die "this script is macOS-only"
 
 # -- Helpers -------------------------------------------------------------------
-# brew_install FORMULA -- install a library formula unless already present.
-brew_install() {
-  if brew list "$1" >/dev/null 2>&1; then
-    log "$1 already installed"
-  else
-    log "installing $1..."
-    brew install "$1"
-  fi
-}
-
 # ensure_brew_cmd CMD [FORMULA] -- install FORMULA (default: CMD) unless CMD
 # is already on PATH, regardless of how it got there.
 ensure_brew_cmd() {
@@ -102,22 +89,6 @@ ensure_brew_cmd() {
     log "installing ${2:-$1}..."
     brew install "${2:-$1}"
   fi
-}
-
-# -- Shell profile -------------------------------------------------------------
-LOGIN_SHELL="$(login_shell)"
-PROFILE="$(rc_file "$LOGIN_SHELL")"
-
-# ensure_profile_block MARKER TITLE BLOCK -- append BLOCK (sh syntax) under a
-# "# TITLE" header unless PROFILE already contains MARKER.
-ensure_profile_block() {
-  if grep -qF "$1" "$PROFILE" 2>/dev/null; then
-    log "$2 already configured in $PROFILE"
-    return
-  fi
-  log "adding $2 to $PROFILE..."
-  printf '\n# %s\n%s\n' "$2" "$3" >> "$PROFILE"
-  warn "restart your shell (or: source $PROFILE) for $2 to take effect"
 }
 
 # -- Homebrew ------------------------------------------------------------------
@@ -174,62 +145,64 @@ install_lint_tools() {
   done
 }
 
-# -- pyenv + Python ------------------------------------------------------------
-# https://github.com/pyenv/pyenv#b-set-up-your-shell-environment-for-pyenv
-install_pyenv() {
-  ensure_brew_cmd pyenv
-  for dep in $PYENV_BUILD_DEPS; do
-    brew_install "$dep"
-  done
+# -- uv + Python ---------------------------------------------------------------
+# https://docs.astral.sh/uv/
+# https://docs.astral.sh/uv/concepts/python-versions/
+install_uv() {
+  ensure_brew_cmd uv
+}
 
-  # The block below is sh syntax; other shells need their own pyenv setup.
-  if [ "$(shell_syntax "$LOGIN_SHELL")" != sh ]; then
-    warn "pyenv shell init not added for login shell '$LOGIN_SHELL' -- see $PYENV_DOCS_URL"
-    return
-  fi
-  init_shell=""
-  case "$LOGIN_SHELL" in
-    zsh|bash) init_shell=" $LOGIN_SHELL" ;;
-  esac
-  ensure_profile_block "pyenv init" "pyenv" "$(cat <<EOF
-export PYENV_ROOT="\$HOME/.pyenv"
-[ -d "\$PYENV_ROOT/bin" ] && export PATH="\$PYENV_ROOT/bin:\$PATH"
-eval "\$(pyenv init -${init_shell})"
-EOF
-)"
+# managed_python VERSION -- print the path of the uv-managed Python VERSION;
+# fails if uv has not installed it. --system skips .venv interpreters.
+managed_python() {
+  uv python find --managed-python --system "$1" 2>/dev/null
+}
+
+# base_prefix PYTHON -- print the real path of the installation PYTHON runs
+# on (for a venv: the Python it was created from). Prints nothing if PYTHON
+# does not run.
+base_prefix() {
+  "$1" -c 'import os, sys; print(os.path.realpath(sys.base_prefix))' \
+    2>/dev/null || true
 }
 
 setup_python() {
   [ -f "$PYTHON_VERSION_FILE" ] || die "missing $PYTHON_VERSION_FILE"
   py_version="$(tr -d '[:space:]' < "$PYTHON_VERSION_FILE")"
 
-  if pyenv versions --bare | grep -qx "$py_version"; then
-    log "python $py_version already installed"
+  if py_bin="$(managed_python "$py_version")"; then
+    log "python $py_version already installed ($py_bin)"
   else
-    log "installing python $py_version via pyenv (compiles; takes a few minutes)..."
-    pyenv install "$py_version"
+    log "installing python $py_version via uv..."
+    # --no-bin: do not add python3.X to ~/.local/bin; only .venv uses it.
+    uv python install --no-bin "$py_version"
+    py_bin="$(managed_python "$py_version")" \
+      || die "uv installed python $py_version but cannot find it"
   fi
-  py_bin="$(pyenv root)/versions/${py_version}/bin/python"
 
-  venv_version="$("$VENV_DIR/bin/python" -c \
-    'import platform; print(platform.python_version())' 2>/dev/null || true)"
-  if [ "$venv_version" = "$py_version" ]; then
+  # Comparing installations, not version strings, also replaces a venv built
+  # on the same version from another source (e.g. pyenv).
+  want_base="$(base_prefix "$py_bin")"
+  [ -n "$want_base" ] || die "python $py_version does not run: $py_bin"
+  venv_base="$(base_prefix "$VENV_DIR/bin/python")"
+  if [ "$venv_base" = "$want_base" ]; then
     log "venv already exists (python $py_version)"
   else
     if [ -d "$VENV_DIR" ]; then
-      warn "venv is python '${venv_version:-broken}', want $py_version -- recreating"
+      warn "venv runs on '${venv_base:-broken}', want $want_base -- recreating"
     fi
     log "creating venv at $VENV_DIR..."
-    "$py_bin" -m venv --clear "$VENV_DIR"
+    # A patch-version request pins the venv to that patch; uv would otherwise
+    # link it to the minor version's latest installed patch.
+    uv venv --quiet --clear --managed-python --python "$py_version" "$VENV_DIR"
   fi
 }
 
-# pip skips requirements that are already satisfied, so this only installs
+# uv skips requirements that are already satisfied, so this only installs
 # what is missing or out of pin.
 install_python_deps() {
   log "installing python deps from requirements.txt..."
-  "$VENV_DIR/bin/python" -m pip install --quiet --upgrade pip
-  "$VENV_DIR/bin/python" -m pip install --quiet -r "$REQUIREMENTS"
+  uv pip install --quiet --python "$VENV_DIR" -r "$REQUIREMENTS"
   for tool in $VENV_TOOLS; do
     "$VENV_DIR/bin/$tool" --version >/dev/null 2>&1 \
       || die "$tool missing from .venv -- add it to requirements.txt"
@@ -244,7 +217,7 @@ setup_brew_env
 install_claude
 install_gh
 install_lint_tools
-install_pyenv
+install_uv
 setup_python
 install_python_deps
 "$INSTALL_SCRIPT"
@@ -253,7 +226,7 @@ echo ""
 log "bootstrap complete."
 echo ""
 echo "  next steps:"
-echo "    exec \"\$SHELL\"                     # reload profile (pyenv, ~/.local/bin)"
+echo "    exec \"\$SHELL\"                     # reload profile (~/.local/bin)"
 echo "    eigenaugen review -h               # review a pull request"
 echo "    source .venv/bin/activate          # put ruff + pytest on PATH"
 echo "    gh auth login                      # if not yet authenticated"

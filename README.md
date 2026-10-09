@@ -39,17 +39,15 @@ In order:
 | `jq`            | `brew install jq`, https://formulae.brew.sh/formula/jq    | `jq` on PATH (macOS 15+ ships `/usr/bin/jq`) |
 | `yq`            | `brew install yq`, https://formulae.brew.sh/formula/yq    | `yq` on PATH                           |
 | shellcheck      | `brew install shellcheck`, https://www.shellcheck.net/    | `shellcheck` on PATH                   |
-| pyenv           | `brew install pyenv` + suggested build deps               | `pyenv` on PATH                        |
-| Python          | `pyenv install`, version from `.python-version`           | `pyenv versions`                       |
-| `.venv`         | `python -m venv`                                          | `.venv` Python matches `.python-version` |
-| ruff, pytest    | `pip install -r requirements.txt` into `.venv`            | pip skips satisfied pins               |
+| uv              | `brew install uv`, https://docs.astral.sh/uv/             | `uv` on PATH                           |
+| Python          | `uv python install` (prebuilt), version from `.python-version` | `uv python find --managed-python` |
+| `.venv`         | `uv venv`                                                 | `.venv` runs on that uv-managed Python |
+| ruff, pytest    | `uv pip install -r requirements.txt` into `.venv`         | uv skips satisfied pins                |
 | `eigenaugen`    | `scripts/install.sh`, see [below](#the-eigenaugen-command) | shim in `~/.local/bin` points at this checkout |
 
 Startup-file edits, appended only if absent, to the file of your login
 shell (see [below](#the-eigenaugen-command)):
 * `~/.local/bin` on PATH, unless already on PATH (claude, eigenaugen)
-* pyenv init (`PYENV_ROOT`, `pyenv init -`); sh-syntax shells only,
-  others get a warning with the pyenv docs link
 
 ### The eigenaugen command
 ```sh
@@ -79,7 +77,7 @@ rm ~/.local/bin/eigenaugen      # uninstall
 
 ### After bootstrap
 ```sh
-exec "$SHELL"                  # reload profile (PATH, pyenv)
+exec "$SHELL"                  # reload profile (PATH)
 source .venv/bin/activate      # put ruff + pytest on PATH
 gh auth login                  # once per machine
 claude                         # log in on first run
