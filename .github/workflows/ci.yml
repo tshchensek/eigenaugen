@@ -1,0 +1,60 @@
+# https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Least privilege: no job writes to the repo.
+permissions:
+  contents: read
+
+# A new push to a PR cancels its stale run; every main commit gets a result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+defaults:
+  run:
+    shell: sh
+
+jobs:
+  lint:
+    name: Lint
+    # eigenaugen is macOS-only; lint with the brew tools bootstrap.sh installs.
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # $/ = this repo at the running commit (self-repository syntax).
+      - uses: $/.github/actions/setup-venv
+      # Same list as LINT_TOOLS in scripts/bootstrap.sh. The runner image
+      # ships jq and yq, not shellcheck.
+      - name: Install lint tools
+        env:
+          LINT_TOOLS: jq yq shellcheck
+          HOMEBREW_NO_AUTO_UPDATE: "1"
+          HOMEBREW_NO_INSTALL_CLEANUP: "1"
+        run: |
+          for tool in $LINT_TOOLS; do
+            command -v "$tool" >/dev/null || brew install "$tool"
+          done
+      - name: Lint
+        run: ./scripts/lintme.sh -c
+
+  test:
+    name: Test
+    needs: lint
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: $/.github/actions/setup-venv
+      - name: Test
+        run: pytest

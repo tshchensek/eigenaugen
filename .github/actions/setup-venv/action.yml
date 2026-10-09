@@ -1,0 +1,18 @@
+# https://docs.github.com/en/actions/tutorials/create-actions/create-a-composite-action
+name: Set up .venv
+description: >-
+  Install uv, create .venv from .python-version, install requirements.txt and
+  put .venv/bin on PATH (the CI half of scripts/bootstrap.sh).
+
+runs:
+  using: composite
+  steps:
+    # https://github.com/astral-sh/setup-uv
+    # activate-environment runs `uv venv`, which reads .python-version.
+    - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+      with:
+        activate-environment: true
+        cache-python: true
+    - name: Install requirements.txt
+      shell: sh
+      run: uv pip install -r requirements.txt

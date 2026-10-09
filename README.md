@@ -15,6 +15,7 @@
   - [Workflow](#workflow)
   - [Lint](#lint)
   - [Test](#test)
+  - [CI](#ci)
 
 ## Install
 Requirements: macOS 13+.
@@ -212,6 +213,7 @@ characters.
 | `eigenaugen/src/github.py`     | `gh` wrappers: targets, resolve, diff, checkout, post |
 | `eigenaugen/src/prompts/`      | system prompt, launch prompt, subagent definitions   |
 | `tests/`                       | pytest suite; no network                             |
+| `.github/workflows/ci.yml`     | CI: lint, then test                                  |
 
 The prompts are self-contained: they copy the communication, citation,
 and URL formatting rules instead of pointing at this repo's `AGENTS.md`.
@@ -272,3 +274,20 @@ such as `local`), mode `755`. Shared helpers live in
 ```sh
 pytest
 ```
+
+### CI
+GitHub Actions, `.github/workflows/ci.yml`. Runs on pushes to `main`, on
+pull requests, and on demand (`gh workflow run ci.yml`).
+
+| Job    | Runs after | Steps                                                  |
+|--------|------------|--------------------------------------------------------|
+| `lint` | --         | `./scripts/lintme.sh -c` (all linters, check only)     |
+| `test` | `lint`     | `pytest`                                               |
+
+* Both jobs run on `macos-latest`, like the tool itself.
+* `.github/actions/setup-venv` builds `.venv` the way `bootstrap.sh` does:
+  uv, the Python in `.python-version`, `requirements.txt`.
+* Third-party actions are pinned to commit SHAs; the tag is in a trailing
+  comment. The local action is referenced as `$/...` (GitHub's
+  self-repository syntax: this repo at the running commit).
+* A new push to a PR cancels its running CI.
