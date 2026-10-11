@@ -7,8 +7,11 @@
 #   * Claude Code CLI (official native installer)
 #   * gh, the GitHub CLI (brew)
 #   * jq, yq, shellcheck for ./scripts/lintme.sh (brew; macOS 15+ ships jq)
-#   * uv, the Python version and package manager (brew)
-#   * Python from .python-version (uv-managed, prebuilt) + .venv
+#   * uv, the Python version and package manager: the one on PATH if it
+#     can install .python-version's Python, else a pinned uv downloaded
+#     into .toolchain/ (the uv on PATH is never installed or upgraded)
+#   * Python from .python-version (uv-managed, prebuilt, in .toolchain/)
+#     + .venv
 #   * ruff, pytest (uv pip into .venv, pinned in requirements.txt)
 #   * the eigenaugen command in ~/.local/bin, which goes on PATH
 set -eu
@@ -18,6 +21,8 @@ set -eu
 # Sourced before anything changes PATH: it records the inherited PATH.
 # shellcheck source=SCRIPTDIR/lib/shellrc.sh
 . "$(dirname "$0")/lib/shellrc.sh"
+# shellcheck source=SCRIPTDIR/lib/uv.sh
+. "$(dirname "$0")/lib/uv.sh"
 
 # -- Constants -----------------------------------------------------------------
 HOMEBREW_INSTALL_URL="https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
@@ -50,9 +55,12 @@ WHAT IT DOES
   3. Install gh (GitHub CLI) via brew.
   4. Install $LINT_TOOLS via brew, unless already on PATH (macOS 15+
      ships /usr/bin/jq).
-  5. Install uv via brew.
-  6. Install the Python version in .python-version via uv (prebuilt;
-     nothing compiles).
+  5. Pick uv: the one on PATH if it can install the Python in
+     .python-version, else download uv $PINNED_UV_VERSION (checksum
+     pinned) into .toolchain/. Never installs or upgrades the uv on
+     PATH.
+  6. Install the Python version in .python-version via uv into
+     .toolchain/ (prebuilt; nothing compiles).
   7. Create .venv from that Python and install requirements.txt
      (ruff, pytest) via uv.
   8. Run scripts/install.sh: install the eigenaugen command into
@@ -61,6 +69,7 @@ WHAT IT DOES
 
 NOTES
   * Re-running is safe -- every step checks existing state first.
+  * Remove the uv and Python bootstrap installed: rm -rf .toolchain .venv
   * Startup file: found from the login shell (dscl, else \$SHELL):
     zsh ~/.zshrc, bash the first of ~/.bash_profile ~/.bash_login
     ~/.profile, fish ~/.config/fish/config.fish, tcsh ~/.tcshrc or
@@ -148,14 +157,19 @@ install_lint_tools() {
 # -- uv + Python ---------------------------------------------------------------
 # https://docs.astral.sh/uv/
 # https://docs.astral.sh/uv/concepts/python-versions/
-install_uv() {
-  ensure_brew_cmd uv
+# Every uv call runs $uv_bin, set by select_uv (lib/uv.sh).
+
+# read_python_version -- set py_version from .python-version.
+read_python_version() {
+  [ -f "$PYTHON_VERSION_FILE" ] || die "missing $PYTHON_VERSION_FILE"
+  py_version="$(tr -d '[:space:]' < "$PYTHON_VERSION_FILE")"
 }
 
-# managed_python VERSION -- print the path of the uv-managed Python VERSION;
-# fails if uv has not installed it. --system skips .venv interpreters.
+# managed_python VERSION -- print the path of the uv-managed Python VERSION
+# in UV_PYTHON_INSTALL_DIR; fails if uv has not installed it there.
+# --system skips .venv interpreters.
 managed_python() {
-  uv python find --managed-python --system "$1" 2>/dev/null
+  "$uv_bin" python find --managed-python --system "$1" 2>/dev/null
 }
 
 # base_prefix PYTHON -- print the real path of the installation PYTHON runs
@@ -167,15 +181,12 @@ base_prefix() {
 }
 
 setup_python() {
-  [ -f "$PYTHON_VERSION_FILE" ] || die "missing $PYTHON_VERSION_FILE"
-  py_version="$(tr -d '[:space:]' < "$PYTHON_VERSION_FILE")"
-
   if py_bin="$(managed_python "$py_version")"; then
     log "python $py_version already installed ($py_bin)"
   else
-    log "installing python $py_version via uv..."
+    log "installing python $py_version into $UV_PYTHON_INSTALL_DIR..."
     # --no-bin: do not add python3.X to ~/.local/bin; only .venv uses it.
-    uv python install --no-bin "$py_version"
+    "$uv_bin" python install --no-bin "$py_version"
     py_bin="$(managed_python "$py_version")" \
       || die "uv installed python $py_version but cannot find it"
   fi
@@ -194,7 +205,8 @@ setup_python() {
     log "creating venv at $VENV_DIR..."
     # A patch-version request pins the venv to that patch; uv would otherwise
     # link it to the minor version's latest installed patch.
-    uv venv --quiet --clear --managed-python --python "$py_version" "$VENV_DIR"
+    "$uv_bin" venv --quiet --clear --managed-python --python "$py_version" \
+      "$VENV_DIR"
   fi
 }
 
@@ -202,7 +214,7 @@ setup_python() {
 # what is missing or out of pin.
 install_python_deps() {
   log "installing python deps from requirements.txt..."
-  uv pip install --quiet --python "$VENV_DIR" -r "$REQUIREMENTS"
+  "$uv_bin" pip install --quiet --python "$VENV_DIR" -r "$REQUIREMENTS"
   for tool in $VENV_TOOLS; do
     "$VENV_DIR/bin/$tool" --version >/dev/null 2>&1 \
       || die "$tool missing from .venv -- add it to requirements.txt"
@@ -217,7 +229,8 @@ setup_brew_env
 install_claude
 install_gh
 install_lint_tools
-install_uv
+read_python_version
+select_uv "$py_version"
 setup_python
 install_python_deps
 "$INSTALL_SCRIPT"

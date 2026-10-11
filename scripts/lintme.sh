@@ -14,7 +14,7 @@ set -eu
 # -- Constants -----------------------------------------------------------------
 LINTERS="python json yaml shell"
 # Directory basenames never searched for lintable files.
-PRUNE_DIRS=".git .venv .ruff_cache .pytest_cache"
+PRUNE_DIRS=".git .venv .toolchain .ruff_cache .pytest_cache"
 VENV_BIN="$PROJECT_ROOT/.venv/bin"
 
 CHECK_ONLY=false

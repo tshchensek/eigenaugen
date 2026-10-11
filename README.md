@@ -29,6 +29,10 @@ cd eigenaugen
 Idempotent --- safe to re-run. Every dependency is checked first and
 installed only if missing. `./scripts/bootstrap.sh -h` prints help.
 
+Bootstrap never puts a uv on your PATH, nor upgrades or replaces yours.
+The Python it installs, and uv when yours is missing or too old, live in
+`.toolchain/` (gitignored); undo with `rm -rf .toolchain .venv`.
+
 ### What bootstrap installs
 In order:
 
@@ -40,8 +44,8 @@ In order:
 | `jq`            | `brew install jq`, https://formulae.brew.sh/formula/jq    | `jq` on PATH (macOS 15+ ships `/usr/bin/jq`) |
 | `yq`            | `brew install yq`, https://formulae.brew.sh/formula/yq    | `yq` on PATH                           |
 | shellcheck      | `brew install shellcheck`, https://www.shellcheck.net/    | `shellcheck` on PATH                   |
-| uv              | `brew install uv`, https://docs.astral.sh/uv/             | `uv` on PATH                           |
-| Python          | `uv python install` (prebuilt), version from `.python-version` | `uv python find --managed-python` |
+| uv              | `uv` on PATH, else uv `PINNED_UV_VERSION` (`scripts/lib/uv.sh`) downloaded to `.toolchain/bin/`, SHA-256 pinned, https://docs.astral.sh/uv/ | `uv python list --only-downloads` knows the Python in `.python-version` |
+| Python          | `uv python install` (prebuilt) into `.toolchain/python/`, version from `.python-version` | `uv python find --managed-python` |
 | `.venv`         | `uv venv`                                                 | `.venv` runs on that uv-managed Python |
 | ruff, pytest    | `uv pip install -r requirements.txt` into `.venv`         | uv skips satisfied pins                |
 | `eigenaugen`    | `scripts/install.sh`, see [below](#the-eigenaugen-command) | shim in `~/.local/bin` points at this checkout |
@@ -206,6 +210,7 @@ characters.
 | `scripts/install.sh`           | installs the `eigenaugen` shim, puts it on PATH      |
 | `scripts/eigenaugen.sh`        | launcher the shim runs                               |
 | `scripts/lib/shellrc.sh`       | login shell, startup file, PATH line                 |
+| `scripts/lib/uv.sh`            | bootstrap's uv: the one on PATH, else a pinned one   |
 | `eigenaugen/src/cli.py`        | `eigenaugen review` arguments, orchestration         |
 | `eigenaugen/src/reviewer.py`   | agent options, sandbox, progress, result checks      |
 | `eigenaugen/src/agent_sdk/`    | SDK-style client for the `claude` CLI                |
