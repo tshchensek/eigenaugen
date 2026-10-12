@@ -17,19 +17,23 @@ PINNED_UV="$TOOLCHAIN_DIR/bin/uv"
 # dies with a hint when it does.
 PINNED_UV_VERSION="0.13.0"
 PINNED_UV_URL="https://github.com/astral-sh/uv/releases/download/$PINNED_UV_VERSION"
-# SHA-256 of uv-<arch>-apple-darwin.tar.gz for PINNED_UV_VERSION. Pinned here
-# because a checksum fetched beside the tarball proves it intact, not
-# genuine. On a bump, copy them from the release's .sha256 files after
-# `gh attestation verify <tarball> -R astral-sh/uv` passes.
-PINNED_UV_SHA256_AARCH64="a9c1b29002cf3c83f07fa9cd8a887a3be0107d90e23189721221e7257db8e3d6"
-PINNED_UV_SHA256_X86_64="5f44dcbde809b632f47c36fadb241cb4d6f9af71d0c8f172b5d2026d3dde742c"
+# SHA-256 of uv-<target>.tar.gz for PINNED_UV_VERSION, one "target sha256"
+# per line. Pinned here because a checksum fetched beside the tarball proves
+# it intact, not genuine. On a bump, copy them from the release's .sha256
+# files after `gh attestation verify <tarball> -R astral-sh/uv` passes.
+PINNED_UV_SHA256="
+aarch64-apple-darwin a9c1b29002cf3c83f07fa9cd8a887a3be0107d90e23189721221e7257db8e3d6
+x86_64-apple-darwin 5f44dcbde809b632f47c36fadb241cb4d6f9af71d0c8f172b5d2026d3dde742c
+aarch64-unknown-linux-gnu 3ccfb6af6e242433eb552f7d9676abd5412c6595c497e990d9c8cb7b5bd4d2c3
+x86_64-unknown-linux-gnu 1468ebd5a5541121837c5a2817b9972ba6090fa6caa3d142620850a47fb75154
+"
 # Read by every uv call. In the user's ~/.local/share/uv/python, installing a
 # new patch would relink the user's own venvs on that minor version to it.
 UV_PYTHON_INSTALL_DIR="$TOOLCHAIN_DIR/python"
 export UV_PYTHON_INSTALL_DIR
 
 # uv_can_install UV VERSION -- succeed if the uv binary UV runs and can
-# download Python VERSION for this Mac. A uv too old to know VERSION prints
+# download Python VERSION for this machine. A uv too old to know VERSION prints
 # nothing here; `uv python install` would fail with "No download found".
 uv_can_install() {
   [ -n "$("$1" python list --only-downloads --all-versions "$2" 2>/dev/null)" ]
@@ -45,17 +49,19 @@ install_pinned_uv() {
       return
       ;;
   esac
+  case "$(uname -s)" in
+    Darwin) _uv_os="apple-darwin" ;;
+    Linux) _uv_os="unknown-linux-gnu" ;;
+    *) die "no uv build for this OS: $(uname -s)" ;;
+  esac
+  # macOS says arm64, Linux aarch64; uv's release assets say aarch64.
   case "$(uname -m)" in
-    arm64)
-      _uv_asset="uv-aarch64-apple-darwin"
-      _uv_sha256="$PINNED_UV_SHA256_AARCH64"
-      ;;
-    x86_64)
-      _uv_asset="uv-x86_64-apple-darwin"
-      _uv_sha256="$PINNED_UV_SHA256_X86_64"
-      ;;
+    arm64 | aarch64) _uv_target="aarch64-$_uv_os" ;;
+    x86_64) _uv_target="x86_64-$_uv_os" ;;
     *) die "no uv build for this architecture: $(uname -m)" ;;
   esac
+  _uv_asset="uv-$_uv_target"
+  _uv_sha256="$(printf '%s\n' "$PINNED_UV_SHA256" | sed -n "s/^$_uv_target //p")"
   log "downloading uv $PINNED_UV_VERSION to $PINNED_UV..."
   mkdir -p "$(dirname "$PINNED_UV")"
   # Unpack beside the target, then rename: never a half-written uv.

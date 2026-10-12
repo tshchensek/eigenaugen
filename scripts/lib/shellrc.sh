@@ -18,12 +18,14 @@ CSH_SYNTAX_SHELLS="tcsh csh"
 FISH_SHELL="fish"
 RC_COMMENT="# Added by eigenaugen (scripts/install.sh)"
 
-# login_shell -- print the basename of the user's login shell. The directory
-# service record is what new terminals start, even right after chsh; $SHELL
-# is the fallback.
+# login_shell -- print the basename of the user's login shell. The account
+# record (dscl on macOS, getent on Linux) is what new terminals start, even
+# right after chsh; $SHELL is the fallback.
 login_shell() {
   _shell_path="$(dscl . -read "/Users/$(id -un)" UserShell 2>/dev/null \
     | sed -n 's/^UserShell: //p')"
+  [ -n "$_shell_path" ] \
+    || _shell_path="$(getent passwd "$(id -un)" 2>/dev/null | cut -d : -f 7)"
   basename "${_shell_path:-${SHELL:-sh}}"
 }
 

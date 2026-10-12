@@ -18,7 +18,7 @@
   - [CI](#ci)
 
 ## Install
-Requirements: macOS 13+.
+Requirements: macOS 13+, or Linux (glibc, x86_64 or aarch64).
 
 ```sh
 git clone git@github.com:tshchensek/eigenaugen.git
@@ -38,7 +38,7 @@ In order:
 
 | Dependency      | Source                                                    | Check                                  |
 |-----------------|-----------------------------------------------------------|----------------------------------------|
-| Homebrew        | https://brew.sh                                           | `brew` on PATH                         |
+| Homebrew        | https://brew.sh (macOS only)                              | `brew` on PATH                         |
 | Claude Code CLI | native installer, https://code.claude.com/docs/en/setup  | `claude` on PATH (incl. `~/.local/bin`)|
 | `gh`            | `brew install gh`, https://cli.github.com/                | `gh` on PATH                           |
 | `jq`            | `brew install jq`, https://formulae.brew.sh/formula/jq    | `jq` on PATH (macOS 15+ ships `/usr/bin/jq`) |
@@ -49,6 +49,10 @@ In order:
 | `.venv`         | `uv venv`                                                 | `.venv` runs on that uv-managed Python |
 | ruff, pytest    | `uv pip install -r requirements.txt` into `.venv`         | uv skips satisfied pins                |
 | `eigenaugen`    | `scripts/install.sh`, see [below](#the-eigenaugen-command) | shim in `~/.local/bin` points at this checkout |
+
+On Linux, bootstrap does not install `gh`, `jq`, `yq` or shellcheck: it
+stops at the first one missing and names it. Install them with your
+package manager and re-run.
 
 Startup-file edits, appended only if absent, to the file of your login
 shell (see [below](#the-eigenaugen-command)):
@@ -64,8 +68,8 @@ rm ~/.local/bin/eigenaugen      # uninstall
 1. Writes `~/.local/bin/eigenaugen`, a shim that runs this checkout's
    `scripts/eigenaugen.sh`. Refuses to replace a file it did not write.
 2. Checks whether `~/.local/bin` is on the PATH you ran it with. If not:
-   1. Determines the login shell: directory service record (`dscl`),
-      else `$SHELL`.
+   1. Determines the login shell: account record (`dscl` on macOS,
+      `getent passwd` on Linux), else `$SHELL`.
    2. Determines that shell's startup file (table).
    3. Appends one line, in that shell's syntax, putting `~/.local/bin`
       first on PATH. Never appends it twice.
@@ -289,7 +293,7 @@ pull requests, and on demand (`gh workflow run ci.yml`).
 | `lint` | --         | `./scripts/lintme.sh -c` (all linters, check only)     |
 | `test` | `lint`     | `pytest`                                               |
 
-* Both jobs run on `macos-latest`, like the tool itself.
+* Both jobs run on `macos-latest` and `ubuntu-latest`, like the tool itself.
 * `.github/actions/setup-venv` builds `.venv` the way `bootstrap.sh` does:
   uv, the Python in `.python-version`, `requirements.txt`.
 * Third-party actions are pinned to commit SHAs; the tag is in a trailing

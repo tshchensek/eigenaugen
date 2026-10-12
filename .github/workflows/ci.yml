@@ -23,8 +23,12 @@ defaults:
 jobs:
   lint:
     name: Lint
-    # eigenaugen is macOS-only; lint with the brew tools bootstrap.sh installs.
-    runs-on: macos-latest
+    # Lint with the brew tools bootstrap.sh installs; ubuntu runners ship
+    # brew too.
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,7 +53,10 @@ jobs:
   test:
     name: Test
     needs: lint
-    runs-on: macos-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
