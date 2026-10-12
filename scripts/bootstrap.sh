@@ -1,12 +1,13 @@
 #!/bin/sh
-# bootstrap.sh -- one-time install of the eigenaugen toolchain on macOS.
+# bootstrap.sh -- one-time install of the eigenaugen toolchain on macOS or
+# Linux.
 #
 # Idempotent: safe to run repeatedly. Every dependency is checked first and
 # installed only if missing:
-#   * Homebrew
+#   * Homebrew (macOS)
 #   * Claude Code CLI (official native installer)
-#   * gh, the GitHub CLI (brew)
-#   * jq, yq, shellcheck for ./scripts/lintme.sh (brew; macOS 15+ ships jq)
+#   * gh, the GitHub CLI (brew on macOS; on Linux, must be preinstalled)
+#   * jq, yq, shellcheck for ./scripts/lintme.sh (same; macOS 15+ ships jq)
 #   * uv, the Python version and package manager: the one on PATH if it
 #     can install .python-version's Python, else a pinned uv downloaded
 #     into .toolchain/ (the uv on PATH is never installed or upgraded)
@@ -40,7 +41,7 @@ LINT_TOOLS="jq yq shellcheck"
 # -- Help ----------------------------------------------------------------------
 help() {
   cat <<EOF
-bootstrap.sh -- one-time install of the eigenaugen toolchain on macOS
+bootstrap.sh -- one-time install of the eigenaugen toolchain on macOS or Linux
 
 USAGE
   ./scripts/bootstrap.sh [-h]
@@ -49,12 +50,14 @@ OPTIONS
   -h  Show this help and exit
 
 WHAT IT DOES
-  1. Install Homebrew if absent.
+  1. macOS: install Homebrew if absent.
   2. Install the Claude Code CLI via $CLAUDE_INSTALL_URL
      (into $LOCAL_BIN).
   3. Install gh (GitHub CLI) via brew.
   4. Install $LINT_TOOLS via brew, unless already on PATH (macOS 15+
      ships /usr/bin/jq).
+     Linux: steps 3-4 only check; install missing tools with your
+     package manager.
   5. Pick uv: the one on PATH if it can install the Python in
      .python-version, else download uv $PINNED_UV_VERSION (checksum
      pinned) into .toolchain/. Never installs or upgrades the uv on
@@ -70,7 +73,8 @@ WHAT IT DOES
 NOTES
   * Re-running is safe -- every step checks existing state first.
   * Remove the uv and Python bootstrap installed: rm -rf .toolchain .venv
-  * Startup file: found from the login shell (dscl, else \$SHELL):
+  * Startup file: found from the login shell (dscl or getent, else
+    \$SHELL):
     zsh ~/.zshrc, bash the first of ~/.bash_profile ~/.bash_login
     ~/.profile, fish ~/.config/fish/config.fish, tcsh ~/.tcshrc or
     ~/.cshrc, csh ~/.cshrc, other POSIX shells ~/.profile.
@@ -86,17 +90,24 @@ while getopts ":h" opt; do
   esac
 done
 
-[ "$(uname)" = "Darwin" ] || die "this script is macOS-only"
+OS="$(uname -s)"
+case "$OS" in
+  Darwin | Linux) ;;
+  *) die "unsupported OS: $OS (macOS or Linux)" ;;
+esac
 
 # -- Helpers -------------------------------------------------------------------
-# ensure_brew_cmd CMD [FORMULA] -- install FORMULA (default: CMD) unless CMD
-# is already on PATH, regardless of how it got there.
-ensure_brew_cmd() {
+# ensure_cmd CMD [FORMULA] -- unless CMD is already on PATH, regardless of
+# how it got there: on macOS, brew install FORMULA (default: CMD); on Linux,
+# die, since package managers differ.
+ensure_cmd() {
   if has_cmd "$1"; then
     log "$1 already installed ($(command -v "$1"))"
-  else
+  elif [ "$OS" = Darwin ]; then
     log "installing ${2:-$1}..."
     brew install "${2:-$1}"
+  else
+    die "$1 not found -- install it with your package manager and re-run"
   fi
 }
 
@@ -136,7 +147,7 @@ install_claude() {
 # -- gh ------------------------------------------------------------------------
 # https://cli.github.com/
 install_gh() {
-  ensure_brew_cmd gh
+  ensure_cmd gh
   if gh auth status >/dev/null 2>&1; then
     log "gh already authenticated"
   else
@@ -150,7 +161,7 @@ install_gh() {
 # https://formulae.brew.sh/formula/shellcheck
 install_lint_tools() {
   for tool in $LINT_TOOLS; do
-    ensure_brew_cmd "$tool"
+    ensure_cmd "$tool"
   done
 }
 
@@ -223,8 +234,10 @@ install_python_deps() {
 }
 
 # -- Main ----------------------------------------------------------------------
-install_homebrew
-setup_brew_env
+if [ "$OS" = Darwin ]; then
+  install_homebrew
+  setup_brew_env
+fi
 
 install_claude
 install_gh

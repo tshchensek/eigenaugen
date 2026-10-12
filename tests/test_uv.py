@@ -11,8 +11,14 @@ LIB = Path(__file__).resolve().parent.parent / "scripts" / "lib"
 SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 PY_VERSION = "3.14.8"
 DOWNLOAD_LINE = f"cpython-{PY_VERSION}-macos-aarch64-none    <download available>"
-# Release asset directories, one per architecture uv.sh supports.
-ASSETS = ("uv-aarch64-apple-darwin", "uv-x86_64-apple-darwin")
+# Release asset directories, one per target uv.sh supports.
+TARGETS = (
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-gnu",
+)
+ASSETS = tuple(f"uv-{target}" for target in TARGETS)
 RELEASES_URL = "https://github.com/astral-sh/uv/releases/download/"
 SELECT = f'select_uv {PY_VERSION}; printf "uv_bin=%s\\n" "$uv_bin"'
 
@@ -84,7 +90,8 @@ def release_tarball(path: Path, uv_script: str) -> str:
 
 
 def pin_sha256(sha256: str) -> str:
-    return f"PINNED_UV_SHA256_AARCH64={sha256}; PINNED_UV_SHA256_X86_64={sha256}; "
+    table = "".join(f"{target} {sha256}\n" for target in TARGETS)
+    return f"PINNED_UV_SHA256='{table}'; "
 
 
 def pinned_version(tmp_path: Path) -> str:
