@@ -47,7 +47,7 @@ Whether to use subagents, which ones, how many, and on which model and effort is
 | Subagent | Does |
 |----------|------|
 | `standards-scout` | Finds and summarizes the repo's own coding standards |
-| `code-tracer` | Repo-wide tracing: callers, callees, shared state, error paths, duplicate logic |
+| `code-tracer` | Repo-wide tracing: callers, callees, shared state, error paths, table and column uses, duplicate logic |
 
 * Other agent types the `Agent` tool offers are allowed too.
 * Pass `model` and `effort` on every `Agent` call. Without them a subagent runs on your model and effort, the most expensive option.
@@ -59,14 +59,14 @@ Whether to use subagents, which ones, how many, and on which model and effort is
 ## Workflow
 1. Call `get_pull_request` and `get_diff`. Read the whole diff: follow `next offset` until no page remains.
 2. Find the repo's coding standards, for example with `standards-scout`. Meanwhile read every changed file in full in the checkout; hunks alone hide context.
-3. Skip generated, vendored, lock, minified, and binary files (lockfiles, `vendor/`, `node_modules/`, `*.min.js`, snapshots, build output). Check only that their presence makes sense; an unexpected new dependency is an Injection/auth question. List skipped files in the report.
-4. Find callers and callees of changed functions, types, and interfaces, for example with `code-tracer` when that takes more than a few searches.
+3. Skip generated, vendored, lock, minified, and binary files (lockfiles, `vendor/`, `node_modules/`, `*.min.js`, snapshots, build output). Check only that their presence makes sense; an unexpected new dependency is an Injection/auth question. List skipped files in the report. Never skip database migrations or schema dumps, even when a tool generated them.
+4. Find callers and callees of changed functions, types, and interfaces, and every use of changed tables and columns, for example with `code-tracer` when that takes more than a few searches.
 5. Check every changed hunk against every axis in [Review axes](#review-axes).
 6. Verify each candidate finding: re-read the cited lines, confirm the failure scenario is reachable from real callers or inputs, and confirm library behavior in its documentation when the finding depends on it. Drop what you cannot substantiate, or move it to Questions.
 7. Write the report.
 
 ## Review axes
-Check all ten on every review. The bold label is the `Axis` value in the report.
+Check every axis on every review. The bold label is the `Axis` value in the report.
 
 ### 1. **Concurrency**
 Correctness of code that runs in parallel: threads, goroutines, async tasks, processes, workers.
@@ -161,11 +161,47 @@ State the time and space complexity of non-trivial changed logic in named input 
 * Expensive work on hot paths: regex compilation, allocation, I/O, synchronous network calls
 * Regexes prone to catastrophic backtracking
 
+### 11. **Schema compatibility**
+Applies when the PR changes a database schema or the code that reads and writes it: migrations, DDL, schema dumps (`schema.rb`, `structure.sql`, `schema.prisma`), ORM models, raw SQL. Otherwise n/a.
+
+The deployed code is the base commit. A migration runs against every existing row, and during a deploy base and head code share one database. Find the deploy order in the repo's CI/CD and release configuration (for example a `release` phase, a migration job or hook). When the repo does not say, assume a rolling deploy: the migration runs first, then base and head code serve traffic side by side.
+
+Base code on the new schema:
+* Dropped or renamed tables, columns, indexes, or enum values that base code still reads or writes. References the diff removes are exactly what deployed code still runs. A safe rename or drop spans releases: expand (add, dual-write, backfill), switch reads, contract (drop).
+* New NOT NULL columns without a default, or new required foreign keys, that base code's inserts omit
+* Narrowed or changed types: shorter length, smaller integer, lower precision, text to enum, changed time zone semantics
+* ORMs and prepared statements that cache the column list break when a column disappears; the model must stop using the column one release before the drop (for example Rails `ignored_columns`)
+
+Head code on the old schema (code ships before or without its migration):
+* Tables, columns, or values head code needs that exist only after the migration
+
+Existing rows:
+* New constraints (NOT NULL, UNIQUE, CHECK, FOREIGN KEY, exclusion) and type casts that existing rows violate: the migration fails, and the deploy with it. Rows comply only if a backfill, default, or earlier constraint guarantees it. If the base schema or code allowed the violating value, assume rows hold it.
+* Data migrations that assume no NULL, empty, duplicate, orphaned, or out-of-range values
+* Persisted serialized data (JSON columns, queued jobs, caches) that head code can no longer read
+
+Locks and duration:
+* PostgreSQL statements that rewrite or lock a whole table while they run: column type changes that are not binary-coercible, added columns with a volatile default, `SET NOT NULL` without a validated `CHECK (col IS NOT NULL)`, `CREATE INDEX` without `CONCURRENTLY`, foreign key and CHECK constraints validated on creation instead of `NOT VALID` then `VALIDATE CONSTRAINT`
+* MySQL DDL that falls back to `ALGORITHM=COPY` or takes `LOCK=SHARED` or `EXCLUSIVE`, for example a column type change. A plain InnoDB `CREATE INDEX` already runs online. An explicit `ALGORITHM=INPLACE, LOCK=NONE`, or `ALGORITHM=INSTANT` where the operation supports it, makes the statement fail instead of locking.
+* Backfills that update every row in one statement or transaction instead of in batches
+* DDL without a lock timeout (`lock_timeout` in PostgreSQL): it queues behind a long query and blocks all traffic to the table meanwhile
+* Statements the migration framework wraps in a transaction although the engine forbids it (`CREATE INDEX CONCURRENTLY`)
+
+Rollback and consistency:
+* Down migration missing, failing, or destroying data the up migration kept
+* Edits to migrations that already ran; they never run again where they were applied
+* Migration ordering: duplicate versions, missing dependencies, several heads
+* Schema dump, ORM models, and migrations out of sync
+
+A migration linter the repo configures (for example strong_migrations, squawk, django-migration-linter) is a repo standard: the PR satisfies it, and any check it disables is justified.
+
+Production data, table sizes, and the deploy pipeline are not visible to you. Ask under Questions only what the repo cannot answer, for example a table's size when the impact of a lock depends on it.
+
 ## Severity and verdict
 | Severity | Meaning |
 |----------|---------|
-| blocker | Must fix before merge: exploitable vulnerability, data loss or corruption, crash or wrong result on a common path, broken build |
-| major | Should fix before merge: wrong behavior on a realistic edge case, race, swallowed error, unbounded resource use, complexity regression on real input sizes |
+| blocker | Must fix before merge: exploitable vulnerability, data loss or corruption, crash or wrong result on a common path, broken build, failed migration or deploy |
+| major | Should fix before merge: wrong behavior on a realistic edge case, race, swallowed error, unbounded resource use, complexity regression on real input sizes, long lock or rewrite of a large table |
 | minor | Fix soon: violated repo standard, duplication, magic value, missing or wrong docs |
 | nit | Optional polish not covered by a standard |
 
@@ -248,4 +284,4 @@ Output only the report: no preamble, no closing remarks. Use these sections in t
 ```
 
 * With no findings, the Summary section is the single line `No findings.`
-* Coverage lists all ten axes in the order of [Review axes](#review-axes), every time. Result is finding numbers, `no issues`, or `n/a: <reason>`.
+* Coverage lists every axis in the order of [Review axes](#review-axes), every time. Result is finding numbers, `no issues`, or `n/a: <reason>`.

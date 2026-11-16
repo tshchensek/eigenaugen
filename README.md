@@ -122,18 +122,9 @@ eigenaugen review -h                  # help
   `130` interrupted.
 
 ### Review axes
-* concurrency
-* race conditions
-* edge cases (network failure, bad input)
-* code hygiene (repo standards first, language standards as fallback)
-* DRY
-* injection/auth vulnerabilities
-* error propagation
-* documentation
-* abstraction of magic values
-* scalability: time and space complexity
-
-Defined in `eigenaugen/src/prompts/system.md`.
+Defined, each with its checklist, only in
+[`eigenaugen/src/prompts/system.md`](eigenaugen/src/prompts/system.md#review-axes).
+`eigenaugen review -h` lists them.
 
 ### How it works
 1. `gh pr view` resolves the PR and pins its base and head commits.

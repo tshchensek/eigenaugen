@@ -29,6 +29,12 @@ def test_system_prompt_names_every_tool_agent_and_contract():
     assert f"\n{reviewer.REPORT_HEADING}\n" in text
 
 
+def test_review_axes_are_numbered_from_one():
+    axes = prompt_loader.review_axes()
+    assert axes
+    assert [axis.number for axis in axes] == list(range(1, len(axes) + 1))
+
+
 def test_subagent_models_are_left_to_the_reviewer():
     agents = prompt_loader.agents()
     assert set(agents) == {"standards-scout", "code-tracer"}

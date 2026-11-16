@@ -1,6 +1,6 @@
 import pytest
 
-from eigenaugen.src import cli
+from eigenaugen.src import cli, prompt_loader
 from eigenaugen.src.constants import ExitCode
 from eigenaugen.src.errors import CommandError, EigenaugenError
 from eigenaugen.src.github import PullRequest, PullTarget, Resolved
@@ -28,6 +28,14 @@ def test_review_defaults_are_opus_xhigh():
 )
 def test_review_targets(argv, target):
     assert cli.parse_args(argv).pull == target
+
+
+def test_review_help_lists_every_axis(capsys):
+    with pytest.raises(SystemExit):
+        cli.parse_args(["review", "-h"])
+    out = capsys.readouterr().out
+    for axis in prompt_loader.review_axes():
+        assert f"{axis.number}. {axis.label}\n" in out
 
 
 @pytest.mark.parametrize(
