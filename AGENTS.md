@@ -47,6 +47,10 @@ When referencing built-in language functions or package APIs, always include a m
 ./scripts/lintme.sh
 ```
 
+## Versioning
+* A change to any shipped file bumps `VERSION` (SemVer) and opens `CHANGELOG.md` with its `## X.Y.Z - YYYY-MM-DD` section. Rules: README.md, Versioning.
+* Check before committing: `./scripts/release.sh check main`
+
 ## DO NOT
 * add or commit secrets to the codebase
 

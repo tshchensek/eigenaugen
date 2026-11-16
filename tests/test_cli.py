@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from eigenaugen.src import cli, prompt_loader
-from eigenaugen.src.constants import ExitCode
+from eigenaugen.src.constants import VERSION_FILE, ExitCode
 from eigenaugen.src.context import ReviewContext
 from eigenaugen.src.diffplan import DiffPlan
 from eigenaugen.src.errors import CommandError, EigenaugenError
@@ -41,6 +41,14 @@ def test_top_level_help_points_to_command_help(capsys):
         cli.parse_args(["-h"])
     # argparse wraps the epilog to the terminal width; compare unwrapped.
     assert cli.COMMAND_HELP_HINT in " ".join(capsys.readouterr().out.split())
+
+
+def test_version_flag_prints_the_version_file(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.parse_args(["--version"])
+    assert exc.value.code == 0
+    version = VERSION_FILE.read_text().strip()
+    assert capsys.readouterr().out == f"{cli.PROG} {version}\n"
 
 
 def test_review_help_lists_every_axis(capsys):

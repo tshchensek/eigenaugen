@@ -1,4 +1,5 @@
 from eigenaugen.src import diffplan, report
+from eigenaugen.src.constants import VERSION
 from eigenaugen.src.context import ContextPull, ReviewContext, Role, StackInfo
 from eigenaugen.src.diffplan import DiffPlan
 from eigenaugen.src.github import PullRequest
@@ -20,7 +21,7 @@ def test_compose_appends_run_footer():
     body = report.compose("## Verdict\nok\n\n", PR, "xhigh", STATS, 252)
     assert body == (
         "## Verdict\nok\n\n---\n"
-        "Reviewed commit `bbbbbbbbbbbb` with eigenaugen, effort `xhigh`\n"
+        f"Reviewed commit `bbbbbbbbbbbb` with eigenaugen {VERSION}, effort `xhigh`\n"
         "- Run: claude-opus-5-5, $2.30 (API list price), 4.2 min, 69 turns\n"
         "- Models: claude-opus-5-5 $2.21, claude-haiku-5-5 $0.09\n"
         "- Subagents: 3 (code-tracer x2, standards-scout x1)\n"

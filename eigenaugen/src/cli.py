@@ -24,6 +24,7 @@ from eigenaugen.src.constants import (
     GH_BIN,
     GIT_BIN,
     SHORT_SHA_LEN,
+    VERSION,
     Destination,
     Effort,
     ExitCode,
@@ -78,6 +79,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=PROG, description=PROG_DESCRIPTION, epilog=COMMAND_HELP_HINT
     )
+    parser.add_argument("--version", action="version", version=f"{PROG} {VERSION}")
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     review = commands.add_parser(
         Command.REVIEW,

@@ -7,7 +7,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Least privilege: no job writes to the repo.
+# Least privilege: only the release job, on main, writes (tags, releases).
 permissions:
   contents: read
 
@@ -65,3 +65,40 @@ jobs:
       - uses: $/.github/actions/setup-venv
       - name: Test
         run: pytest
+
+  version:
+    name: Version
+    # A PR that changes shipped files must bump VERSION and open
+    # CHANGELOG.md with its section; ./scripts/release.sh -h has the rules.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # The PR's merge commit and its parents; HEAD^1 is the base
+          # branch tip it merges into.
+          fetch-depth: 2
+      - name: Check version
+        run: ./scripts/release.sh check HEAD^1
+
+  release:
+    name: Release
+    # Each new VERSION on main becomes tag vVERSION and a GitHub Release,
+    # once lint and test pass. Re-run with `gh workflow run ci.yml`.
+    if: github.ref == 'refs/heads/main'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: ./scripts/release.sh publish

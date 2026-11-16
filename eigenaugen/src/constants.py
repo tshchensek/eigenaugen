@@ -3,12 +3,14 @@
 from enum import IntEnum, StrEnum
 from pathlib import Path
 
-VERSION = "0.1.0"
-
 PACKAGE_DIR = Path(__file__).resolve().parent
 # Repository root: the directory that must be on sys.path.
 PROJECT_ROOT = PACKAGE_DIR.parent.parent
 PROMPTS_DIR = PACKAGE_DIR / "prompts"
+
+# MAJOR.MINOR.PATCH; scripts/release.sh validates it and CI enforces bumps.
+VERSION_FILE = PROJECT_ROOT / "VERSION"
+VERSION = VERSION_FILE.read_text().strip()
 
 GH_BIN = "gh"
 GIT_BIN = "git"

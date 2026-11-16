@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 
 from eigenaugen.src import coverage
-from eigenaugen.src.constants import CLAUDE_BIN, SHORT_SHA_LEN
+from eigenaugen.src.constants import CLAUDE_BIN, SHORT_SHA_LEN, VERSION
 from eigenaugen.src.context import ReviewContext, Role
 from eigenaugen.src.diffplan import DiffPlan
 from eigenaugen.src.github import PullRequest
@@ -59,7 +59,7 @@ def footer(
 ) -> str:
     """E.g.:
 
-    Reviewed commit `a9d9d84ee3e8` with eigenaugen, effort `xhigh`
+    Reviewed commit `a9d9d84ee3e8` with eigenaugen 0.1.0, effort `xhigh`
     - Diff: 12 files, +300 -20; 3 review pages in 1 chunk; all read
     - Context: GitHub stack #577, 3 PRs of octo/repo#575
     - Run: claude-opus-5-5, $2.30 (API list price), 4.2 min, 69 turns
@@ -86,7 +86,7 @@ def footer(
         f"{minutes:.1f} min, {_plural(stats.turns, 'turn')}"
     )
     lines = [
-        f"Reviewed commit `{sha}` with eigenaugen, effort `{effort}`",
+        f"Reviewed commit `{sha}` with eigenaugen {VERSION}, effort `{effort}`",
         *(f"- {line}" for line in scope),
         f"- Run: {run}",
         f"- Models: {models or stats.model}",
