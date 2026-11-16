@@ -58,6 +58,13 @@ class Command(StrEnum):
     REVIEW = "review"
 
 
+PROG_DESCRIPTION = "Pull request review with Claude Code."
+# `eigenaugen -h` lists only commands; argparse keeps their options per command.
+COMMAND_HELP_HINT = (
+    f"Run '{PROG} COMMAND -h' for a command's options, e.g. {PROG} {Command.REVIEW} -h"
+)
+
+
 def review_description() -> str:
     """`review -h` text; the axes come from the system prompt."""
     axes = [
@@ -69,7 +76,7 @@ def review_description() -> str:
 
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        prog=PROG, description="Pull request review with Claude Code."
+        prog=PROG, description=PROG_DESCRIPTION, epilog=COMMAND_HELP_HINT
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     review = commands.add_parser(

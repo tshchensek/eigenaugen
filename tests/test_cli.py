@@ -36,6 +36,13 @@ def test_review_targets(argv, target):
     assert cli.parse_args(argv).pull == target
 
 
+def test_top_level_help_points_to_command_help(capsys):
+    with pytest.raises(SystemExit):
+        cli.parse_args(["-h"])
+    # argparse wraps the epilog to the terminal width; compare unwrapped.
+    assert cli.COMMAND_HELP_HINT in " ".join(capsys.readouterr().out.split())
+
+
 def test_review_help_lists_every_axis(capsys):
     with pytest.raises(SystemExit):
         cli.parse_args(["review", "-h"])
