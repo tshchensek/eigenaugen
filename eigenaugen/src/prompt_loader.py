@@ -1,5 +1,7 @@
 """Load the reviewer's prompt files from eigenaugen/src/prompts/."""
 
+import re
+from dataclasses import dataclass
 from pathlib import Path
 from string import Template
 
@@ -15,10 +17,28 @@ FRONTMATTER_DELIMITER = "---"
 KEY_SEPARATOR = ":"
 LIST_SEPARATOR = ","
 REQUIRED_KEYS = ("name", "description")
+# Review axis headings in system.md, e.g. "### 11. **Schema compatibility**".
+AXIS_HEADING_RE = re.compile(r"### (?P<number>[0-9]+)\. \*\*(?P<label>[^*]+)\*\*")
+
+
+@dataclass(frozen=True)
+class ReviewAxis:
+    number: int
+    # Also the `Axis` value in the report.
+    label: str
 
 
 def system_prompt() -> str:
     return SYSTEM_PROMPT_PATH.read_text()
+
+
+def review_axes() -> list[ReviewAxis]:
+    """Review axes in system.md order; system.md is their only definition."""
+    return [
+        ReviewAxis(int(m["number"]), m["label"])
+        for line in system_prompt().splitlines()
+        if (m := AXIS_HEADING_RE.fullmatch(line))
+    ]
 
 
 def user_prompt(**fields: str) -> str:

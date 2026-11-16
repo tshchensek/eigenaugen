@@ -5,7 +5,7 @@ import os
 import time
 from enum import StrEnum
 
-from eigenaugen.src import github, log, proc, report, reviewer
+from eigenaugen.src import github, log, proc, prompt_loader, report, reviewer
 from eigenaugen.src.constants import (
     CLAUDE_BIN,
     DEFAULT_EFFORT,
@@ -24,6 +24,9 @@ from eigenaugen.src.github import PullTarget
 from eigenaugen.src.workspace import workspace
 
 PROG = "eigenaugen"
+REVIEW_INTRO = "Review a GitHub pull request along these axes:"
+REVIEW_OUTPUTS = "The report goes to stdout, progress to stderr."
+HELP_INDENT = "  "
 REVIEW_EXAMPLES = """\
 examples:
   eigenaugen review 123                                    # inside a clone of the repo
@@ -38,6 +41,15 @@ class Command(StrEnum):
     REVIEW = "review"
 
 
+def review_description() -> str:
+    """`review -h` text; the axes come from the system prompt."""
+    axes = [
+        f"{HELP_INDENT}{axis.number}. {axis.label}"
+        for axis in prompt_loader.review_axes()
+    ]
+    return "\n".join([REVIEW_INTRO, *axes, "", REVIEW_OUTPUTS])
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=PROG, description="Pull request review with Claude Code."
@@ -46,12 +58,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     review = commands.add_parser(
         Command.REVIEW,
         help="review a GitHub pull request",
-        description=(
-            "Review a GitHub pull request along fixed axes (concurrency, races, "
-            "edge cases, hygiene, DRY, injection/auth, error propagation, docs, "
-            "magic values, scalability). The report goes to stdout, progress "
-            "to stderr."
-        ),
+        description=review_description(),
         epilog=REVIEW_EXAMPLES,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

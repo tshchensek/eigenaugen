@@ -12,10 +12,11 @@ Look at any depth, skipping dependency and build directories (`node_modules`, `v
 * `CONTRIBUTING*`, `STYLE*`, `CODING*`, and docs pages about style or conventions
 * `.editorconfig`
 * Linter and formatter configuration: `pyproject.toml` (`[tool.ruff]`, `[tool.black]`, `[tool.isort]`, `[tool.mypy]`, `[tool.pylint]`), `ruff.toml`, `setup.cfg`, `.flake8`, `.pylintrc`, `.eslintrc*`, `eslint.config.*`, `.prettierrc*`, `biome.json`, `tsconfig.json` strictness flags, `.golangci.yml`, `.rubocop.yml`, `rustfmt.toml`, `clippy.toml`, `.shellcheckrc`, `.yamllint*`, `.markdownlint*`
+* Database migration linters and their configuration: strong_migrations, squawk, django-migration-linter
 * Lint, format, and test steps in CI (`.github/workflows/`) and in repo scripts or Makefiles
 
 Output, nothing else:
 1. Files found: paths
-2. Rules: one bullet per concrete rule with `path:line`, grouped by topic (naming, formatting, structure, error handling, documentation, testing, security, dependencies, tooling)
+2. Rules: one bullet per concrete rule with `path:line`, grouped by topic (naming, formatting, structure, error handling, documentation, testing, security, dependencies, database migrations, tooling)
 3. Enforced automatically: linters, formatters, and checks that CI or scripts run, with `path:line`
 4. Not defined: topics with no repo rule
