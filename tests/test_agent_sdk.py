@@ -44,9 +44,11 @@ def test_build_command_maps_options(tmp_path):
         mcp_servers={"gh": McpStdioServerConfig("py", ["-m", "x"], {"A": "1"})},
         agents={"scout": AgentDefinition("d", "p", ["Read"], "haiku")},
         extra_args={"restricted": None, "permission-prompts": "none"},
+        resume="sess-1",
     )
     cmd = client.build_command(options)
     assert cmd[:2] == ["claude", "--print"]
+    assert flag_value(cmd, "--resume") == "sess-1"
     assert flag_value(cmd, "--input-format") == "stream-json"
     assert flag_value(cmd, "--output-format") == "stream-json"
     assert flag_value(cmd, "--append-system-prompt") == "extra"
@@ -76,6 +78,7 @@ def test_build_command_maps_options(tmp_path):
     assert "--restricted" in cmd
     assert flag_value(cmd, "--permission-prompts") == "none"
     assert "--system-prompt" not in cmd
+    assert "--resume" not in client.build_command(ClaudeAgentOptions())
 
 
 def test_build_command_empty_tools_disables_all():

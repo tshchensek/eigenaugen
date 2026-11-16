@@ -45,26 +45,6 @@ def test_from_url_rejects_bad_shas(sha):
         PullRequest.from_url(URL, sha, HEAD)
 
 
-@pytest.mark.parametrize("path", ["src/app.py", "a b/c.txt", ".github/x.yml"])
-def test_validate_repo_path_accepts(path):
-    assert github.validate_repo_path(path) == path
-
-
-@pytest.mark.parametrize(
-    "path", ["", "/etc/passwd", "a//b", "../x", "a/../../user", "a/./b", "dir/"]
-)
-def test_validate_repo_path_rejects(path):
-    with pytest.raises(EigenaugenError):
-        github.validate_repo_path(path)
-
-
-def test_base_file_quotes_path(monkeypatch):
-    calls = []
-    monkeypatch.setattr(github.proc, "run", lambda argv, **kw: calls.append(argv) or "")
-    github.base_file(PullRequest.from_url(URL, BASE, HEAD), "a b/c?.py")
-    assert calls[0][-1] == f"repos/octo/repo/contents/a%20b/c%3F.py?ref={BASE}"
-
-
 def test_resolve_pins_commits(monkeypatch):
     data = {
         "url": URL,
@@ -73,6 +53,10 @@ def test_resolve_pins_commits(monkeypatch):
         "changedFiles": 2,
         "additions": 3,
         "deletions": 4,
+        "state": "OPEN",
+        "baseRefName": "main",
+        "headRefName": "feat",
+        "isCrossRepository": False,
     }
     calls = []
 
@@ -84,7 +68,77 @@ def test_resolve_pins_commits(monkeypatch):
     resolved = github.resolve(PullTarget("7", "octo/repo"))
     assert resolved.pr.head_sha == HEAD
     assert (resolved.changed_files, resolved.additions, resolved.deletions) == (2, 3, 4)
+    assert (resolved.base_ref, resolved.head_ref, resolved.cross_repo) == (
+        "main",
+        "feat",
+        False,
+    )
     assert calls[0][:6] == ["gh", "pr", "view", "7", "--repo", "octo/repo"]
+    assert "isCrossRepository" in calls[0][-1]
+
+
+def test_key_and_same_repo():
+    pr = PullRequest.from_url(URL, BASE, HEAD)
+    assert pr.key == "octo/repo#7"
+    assert pr.same_repo(PullRequest.from_url(URL.replace("/7", "/8"), BASE, HEAD))
+    other = PullRequest.from_url("https://github.com/octo/other/pull/7", BASE, HEAD)
+    assert not pr.same_repo(other)
+
+
+def test_compare_returns_merge_base(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **_kw):
+        calls.append(argv)
+        return json.dumps({"merge_base": "c" * 40, "behind_by": 3})
+
+    monkeypatch.setattr(github.proc, "run", fake_run)
+    comparison = github.compare(PullRequest.from_url(URL, BASE, HEAD))
+    assert comparison == github.Comparison("c" * 40, 3)
+    assert calls[0][-1] == f"repos/octo/repo/compare/{BASE}...{HEAD}?per_page=1"
+    assert "--jq" in calls[0]
+
+
+def test_compare_rejects_missing_merge_base(monkeypatch):
+    monkeypatch.setattr(github.proc, "run", lambda argv, **kw: '{"merge_base": null}')
+    with pytest.raises(EigenaugenError, match="no merge base"):
+        github.compare(PullRequest.from_url(URL, BASE, HEAD))
+
+
+def test_graphql_types_variables(monkeypatch):
+    calls = []
+
+    def fake_run(argv, **_kw):
+        calls.append(argv)
+        return json.dumps({"data": {"repository": {}}})
+
+    monkeypatch.setattr(github.proc, "run", fake_run)
+    data = github.graphql("ghe.corp", "query { x }", owner="o", number=7)
+    assert data == {"repository": {}}
+    argv = calls[0]
+    assert argv[:5] == ["gh", "api", "graphql", "--hostname", "ghe.corp"]
+    assert argv[5:] == ["-f", "query=query { x }", "-f", "owner=o", "-F", "number=7"]
+
+
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ("7", PullTarget("7")),
+        (URL + "/changes", PullTarget(URL)),
+        ("octo/other#12", PullTarget("12", "octo/other")),
+        ("ghe.corp/octo/other#12", PullTarget("12", "ghe.corp/octo/other")),
+    ],
+)
+def test_parse_ref_accepts(text, expected):
+    assert github.parse_ref(text) == expected
+
+
+@pytest.mark.parametrize(
+    "text", ["", "0", "octo/other", "octo#1", "octo/other#0", "#3"]
+)
+def test_parse_ref_rejects(text):
+    with pytest.raises(EigenaugenError, match="OWNER/REPO#NUMBER"):
+        github.parse_ref(text)
 
 
 def test_resolve_reports_missing_field(monkeypatch):

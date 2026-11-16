@@ -66,6 +66,8 @@ class ClaudeAgentOptions:
     effort: str | None = None
     cwd: Path | None = None
     add_dirs: list[Path] = field(default_factory=list)
+    # Session ID to continue instead of starting a new session.
+    resume: str | None = None
     # Merged over the inherited environment. Extension to the SDK: a None
     # value removes the inherited variable.
     env: dict[str, str | None] = field(default_factory=dict)

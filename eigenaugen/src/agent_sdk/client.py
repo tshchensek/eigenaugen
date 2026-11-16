@@ -67,6 +67,8 @@ def build_command(options: ClaudeAgentOptions) -> list[str]:
         cmd += ["--permission-mode", options.permission_mode]
     for directory in options.add_dirs:
         cmd += ["--add-dir", str(directory)]
+    if options.resume:
+        cmd += ["--resume", options.resume]
     if options.mcp_servers:
         servers = {n: s.to_cli() for n, s in options.mcp_servers.items()}
         cmd += ["--mcp-config", json.dumps({"mcpServers": servers})]

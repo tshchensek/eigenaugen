@@ -3,9 +3,10 @@
 import json
 import sys
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from pathlib import Path
 
-from eigenaugen.src import proc, prompt_loader
+from eigenaugen.src import coverage, proc, prompt_loader
 from eigenaugen.src.agent_sdk.client import build_env, query
 from eigenaugen.src.agent_sdk.types import (
     AssistantMessage,
@@ -22,8 +23,10 @@ from eigenaugen.src.constants import (
     PROJECT_ROOT,
     Destination,
 )
+from eigenaugen.src.context import ReviewContext
+from eigenaugen.src.coverage import Coverage
 from eigenaugen.src.errors import EigenaugenError
-from eigenaugen.src.github import PullRequest
+from eigenaugen.src.prepare import Prepared
 from eigenaugen.src.text import sanitize
 from eigenaugen.src.workspace import Workspace
 
@@ -74,12 +77,21 @@ PROGRESS_KEYS = (
     "model",
     "effort",
     "description",
+    "pr",
     "file_path",
     "path",
+    "side",
+    "chunk",
+    "page",
     "pattern",
     "query",
     "offset",
 )
+# Shown as `key value`: a bare number says nothing.
+LABELED_PROGRESS_KEYS = ("chunk", "page")
+# Sessions resumed to read diff pages the review left unread.
+MAX_CONTINUATIONS = 3
+NO_CONTEXT = "None: no stack found, no related PR named."
 MCP_TOOL_PREFIX = f"mcp__{MCP_SERVER_NAME}__"
 NESTED_INDENT = "  "
 
@@ -108,6 +120,11 @@ class RunStats:
 class Review:
     report: str
     stats: RunStats
+    # Review chunk -> pages of the reviewed diff nobody read; empty when the
+    # whole diff was read.
+    unread: dict[int, list[int]]
+    # Agent runs: the first plus continuations.
+    rounds: int
 
 
 def check_login() -> None:
@@ -126,7 +143,7 @@ def check_login() -> None:
 
 
 def build_options(
-    pr: PullRequest, ws: Workspace, model: str, effort: str
+    context_file: Path, ws: Workspace, model: str, effort: str
 ) -> ClaudeAgentOptions:
     server = McpStdioServerConfig(
         command=sys.executable,
@@ -134,12 +151,8 @@ def build_options(
             PYTHON_SAFE_PATH,
             "-m",
             MCP_SERVER_MODULE,
-            "--pr-url",
-            pr.url,
-            "--base-sha",
-            pr.base_sha,
-            "--head-sha",
-            pr.head_sha,
+            "--context",
+            str(context_file),
         ],
         env={PYTHONPATH_ENV: str(PROJECT_ROOT)},
     )
@@ -163,11 +176,12 @@ def build_options(
 def describe_tool_use(block: ToolUseBlock, root_prefix: str) -> str:
     """One progress line, e.g. `Read src/app/main.py`."""
     name = block.name.removeprefix(MCP_TOOL_PREFIX)
-    values = [
-        str(block.input[key]).replace(root_prefix, "")
-        for key in PROGRESS_KEYS
-        if key in block.input
-    ]
+    values = []
+    for key in PROGRESS_KEYS:
+        if key not in block.input:
+            continue
+        value = str(block.input[key]).replace(root_prefix, "")
+        values.append(f"{key} {value}" if key in LABELED_PROGRESS_KEYS else value)
     return " ".join([name, *values])
 
 
@@ -220,40 +234,73 @@ def _stats(model: str, results: list[ResultMessage]) -> RunStats:
     )
 
 
+def _stack_cells(context: ReviewContext, key: str) -> str:
+    cells = []
+    for stack in context.stacks:
+        for entry in stack.entries:
+            if entry.key == key:
+                cells.append(
+                    f"{stack.description} of {stack.anchor}: position "
+                    f"{entry.position}, {entry.relation}"
+                )
+    return "; ".join(cells) or "--"
+
+
+def context_table(context: ReviewContext) -> str:
+    """The review's PRs as a markdown table. Only text this program made:
+    keys, URLs, roles, positions, counts; no PR-authored titles or branch
+    names."""
+    if len(context.pulls) == 1:
+        return NO_CONTEXT
+    lines = [
+        "| PR | URL | Role | Stack | Commits behind its base | Size |",
+        "|----|-----|------|-------|-------------------------|------|",
+    ]
+    for key, pull in context.pulls.items():
+        lines.append(
+            f"| `{key}` | {pull.url} | {pull.role} | {_stack_cells(context, key)} "
+            f"| {pull.behind_by} | {pull.changed_files} files, "
+            f"+{pull.additions} -{pull.deletions} |"
+        )
+    return "\n".join(lines)
+
+
 def build_prompt(
-    pr: PullRequest, ws: Workspace, destination: Destination, caller_entrypoint: str
+    prepared: Prepared,
+    ws: Workspace,
+    destination: Destination,
+    caller_entrypoint: str,
 ) -> str:
+    pull = prepared.context.reviewed_pull
     return prompt_loader.user_prompt(
-        pr_url=pr.url,
-        base_sha=pr.base_sha,
-        head_sha=pr.head_sha,
+        pr_url=pull.url,
+        pr_key=pull.key,
+        base_sha=pull.base_sha,
+        merge_base_sha=pull.merge_base_sha,
+        head_sha=pull.head_sha,
         checkout=str(ws.checkout),
         destination=destination,
         caller_entrypoint=caller_entrypoint,
+        diff_summary=prepared.plan.summary(pull.key),
+        mode=prepared.plan.mode,
+        context_table=context_table(prepared.context),
     )
 
 
-def review(
-    pr: PullRequest,
-    ws: Workspace,
-    *,
-    model: str,
-    effort: str,
-    destination: Destination,
-    caller_entrypoint: str,
+def _run(
+    prompt: str,
+    options: ClaudeAgentOptions,
+    root_prefix: str,
     on_progress: ProgressCallback,
-) -> Review:
-    """Run the agent to completion; return its sanitized report and stats."""
-    prompt = build_prompt(pr, ws, destination, caller_entrypoint)
-    options = build_options(pr, ws, model, effort)
-    root_prefix = f"{ws.root}/"
-    main_model = model
-    results: list[ResultMessage] = []
+    results: list[ResultMessage],
+) -> str | None:
+    """Run one agent session (or continuation); append its results to
+    RESULTS; return the resolved main model ID, e.g. claude-opus-5-5."""
+    main_model = None
     for message in query(prompt=prompt, options=options):
         match message:
             case SystemMessage(subtype=subtype) if subtype == INIT_SUBTYPE:
                 _check_mcp(message)
-                # The resolved model ID, e.g. claude-opus-5-5 for "opus".
                 main_model = message.data.get("model") or main_model
             case AssistantMessage(content=content, parent_tool_use_id=parent):
                 indent = NESTED_INDENT if parent else ""
@@ -262,5 +309,44 @@ def review(
                         on_progress(indent + describe_tool_use(block, root_prefix))
             case ResultMessage():
                 results.append(message)
+    return main_model
+
+
+def review(
+    prepared: Prepared,
+    ws: Workspace,
+    *,
+    model: str,
+    effort: str,
+    destination: Destination,
+    caller_entrypoint: str,
+    on_progress: ProgressCallback,
+) -> Review:
+    """Run the agent until it has read every review page of the diff, or
+    MAX_CONTINUATIONS resumed sessions did not get it there; return the
+    sanitized report, stats, and what stayed unread."""
+    prompt = build_prompt(prepared, ws, destination, caller_entrypoint)
+    options = build_options(prepared.context_file, ws, model, effort)
+    root_prefix = f"{ws.root}/"
+    coverage_file = Path(prepared.context.coverage_file)
+    key = prepared.context.reviewed
+    results: list[ResultMessage] = []
+    main_model = _run(prompt, options, root_prefix, on_progress, results) or model
+    rounds = 1
+    unread = coverage.unread(prepared.plan, Coverage.load(coverage_file))
+    for _ in range(MAX_CONTINUATIONS):
+        # Raises on a failed run: nothing to continue.
+        _report(results)
+        if not unread:
+            break
+        missing = coverage.describe(unread)
+        on_progress(f"unread pages of the diff: {missing}; resuming the session")
+        continuation = prompt_loader.continue_prompt(pr_key=key, unread=missing)
+        resumed = replace(options, resume=results[-1].session_id)
+        main_model = (
+            _run(continuation, resumed, root_prefix, on_progress, results) or main_model
+        )
+        rounds += 1
+        unread = coverage.unread(prepared.plan, Coverage.load(coverage_file))
     report = sanitize(_report(results))
-    return Review(report, _stats(main_model, results))
+    return Review(report, _stats(main_model, results), unread, rounds)
