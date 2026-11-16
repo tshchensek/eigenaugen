@@ -73,9 +73,8 @@ def gather(
         # The reviewed PR keeps the commits it was pinned to.
         pulls = [reviewed if p.pr.key == reviewed.pr.key else p for p in pulls]
         found.append(stacks.explicit(reviewed, pulls))
-    elif request.discover:
-        if stack := stacks.discover(reviewed):
-            found.append(stack)
+    elif request.discover and (stack := stacks.discover(reviewed)):
+        found.append(stack)
     related: list[Resolved] = []
     for ref in request.related:
         pull = _resolve_ref(ref, reviewed.pr)
