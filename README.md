@@ -15,6 +15,7 @@
   - [Layout](#layout)
 * [Contribute](#contribute)
   - [Workflow](#workflow)
+  - [Versioning](#versioning)
   - [Lint](#lint)
   - [Test](#test)
   - [CI](#ci)
@@ -108,6 +109,7 @@ eigenaugen review OWNER/REPO 123
 eigenaugen review 123 --post          # also post it to the PR
 eigenaugen review 123 > review.md     # report on stdout, progress on stderr
 eigenaugen review -h                  # help
+eigenaugen --version                  # installed version
 
 # stacks and related PRs
 eigenaugen review 122 --stack 120,121,122,123   # stack given, bottom first
@@ -203,7 +205,7 @@ blob-less clone; only the reviewed PR's head is checked out.
    with a footer:
 
    ```text
-   Reviewed commit `a9d9d84ee3e8` with eigenaugen, effort `xhigh`
+   Reviewed commit `a9d9d84ee3e8` with eigenaugen 0.1.0, effort `xhigh`
    - Diff: 12 files, +300 -20; 3 review pages in 1 chunk; all read
    - Context: GitHub stack #577, 3 PRs of octo/repo#575
    - Run: claude-opus-5-5, $2.30 (API list price), 4.2 min, 69 turns
@@ -214,6 +216,7 @@ blob-less clone; only the reviewed PR's head is checked out.
 
    | Field     | Source                                                        |
    |-----------|---------------------------------------------------------------|
+   | version   | eigenaugen's `VERSION` ([Versioning](#versioning))            |
    | Diff      | the reviewed diff: files, lines, review pages and chunks, skimmed files, pages left unread |
    | Context   | stacks found or given, related PRs; omitted when there are none |
    | model     | main agent's model, resolved from the alias                   |
@@ -268,10 +271,13 @@ characters.
 ### Layout
 | Path                           | Purpose                                              |
 |--------------------------------|------------------------------------------------------|
+| `VERSION`                      | eigenaugen's version, `MAJOR.MINOR.PATCH`            |
+| `CHANGELOG.md`                 | what changed in each version                         |
 | `scripts/install.sh`           | installs the `eigenaugen` shim, puts it on PATH      |
 | `scripts/eigenaugen.sh`        | launcher the shim runs                               |
 | `scripts/lib/shellrc.sh`       | login shell, startup file, PATH line                 |
 | `scripts/lib/uv.sh`            | bootstrap's uv: the one on PATH, else a pinned one   |
+| `scripts/release.sh`           | version bump check, releases (CI runs both)          |
 | `eigenaugen/src/cli.py`        | `eigenaugen review` arguments, orchestration         |
 | `eigenaugen/src/prepare.py`    | gathers the review's PRs, clones, diffs, context     |
 | `eigenaugen/src/stacks.py`     | stack discovery: GitHub stacks, branch chains, `--stack` |
@@ -286,7 +292,7 @@ characters.
 | `eigenaugen/src/github.py`     | `gh` wrappers: targets, resolve, compare, GraphQL, post |
 | `eigenaugen/src/prompts/`      | system prompt, launch and continuation prompts, subagent definitions |
 | `tests/`                       | pytest suite; no network                             |
-| `.github/workflows/ci.yml`     | CI: lint, then test                                  |
+| `.github/workflows/ci.yml`     | CI: lint, test, version check; releases from `main`  |
 
 The prompts are self-contained: they copy the communication, citation,
 and URL formatting rules instead of pointing at this repo's `AGENTS.md`.
@@ -303,12 +309,50 @@ Read it before your first change.
    ```
 2. Make changes. New Python dependency: add a pinned line to
    `requirements.txt`, then re-run `./scripts/bootstrap.sh`.
-3. [Lint](#lint) and [test](#test).
-4. Commit, push, open a PR:
+3. Changed a shipped file: bump `VERSION`, add its `CHANGELOG.md`
+   section ([Versioning](#versioning)), then
+   `./scripts/release.sh check main`.
+4. [Lint](#lint) and [test](#test).
+5. Commit, push, open a PR:
    ```sh
    git push -u origin HEAD
    gh pr create --fill
    ```
+
+### Versioning
+[Semantic Versioning](https://semver.org/spec/v2.0.0.html). `VERSION`
+holds `MAJOR.MINOR.PATCH`; [CHANGELOG.md](CHANGELOG.md) says what changed
+in each version.
+
+* Every PR that changes a shipped file bumps `VERSION` and opens
+  `CHANGELOG.md` with a `## X.Y.Z - YYYY-MM-DD` section. CI's `version`
+  job enforces it, so every such merge to `main` is a release.
+* Shipped: every path except `.github/`, `tests/`, `README.md`,
+  `CHANGELOG.md`, `AGENTS.md`, `CLAUDE.md`, `LICENSE`, `ruff.toml`,
+  `.gitignore` (`UNSHIPPED_RE` in `scripts/release.sh`). A new top-level
+  file counts as shipped.
+* Which part to bump:
+
+  | Part    | When                     | Examples                                                    |
+  |---------|--------------------------|-------------------------------------------------------------|
+  | `MAJOR` | breaks users or scripts  | option removed or renamed, exit code changed, report contract (`## Verdict`, footer) changed |
+  | `MINOR` | new behavior             | new option, review axis, MCP tool, or subagent; prompt change that changes what reviews find |
+  | `PATCH` | fixes, no new behavior   | bug fix, prompt wording, pin or dependency bump             |
+
+  While `MAJOR` is `0`, breaking changes bump `MINOR`
+  ([SemVer item 4](https://semver.org/spec/v2.0.0.html#spec-item-4)).
+* Releases: when lint and test pass on `main`, CI's `release` job runs
+  `./scripts/release.sh publish`. Unless tag `vX.Y.Z` exists, it creates
+  it on that commit with a GitHub Release whose notes are the version's
+  changelog section.
+* `eigenaugen --version` prints the version; the review footer and the
+  MCP server's `serverInfo` carry it.
+
+```sh
+./scripts/release.sh check main     # working tree (untracked files too) vs main
+./scripts/release.sh notes          # VERSION's changelog section
+./scripts/release.sh -h             # help, rules
+```
 
 ### Lint
 ```sh
@@ -352,12 +396,18 @@ pytest
 GitHub Actions, `.github/workflows/ci.yml`. Runs on pushes to `main`, on
 pull requests, and on demand (`gh workflow run ci.yml`).
 
-| Job    | Runs after | Steps                                                  |
-|--------|------------|--------------------------------------------------------|
-| `lint` | --         | `./scripts/lintme.sh -c` (all linters, check only)     |
-| `test` | `lint`     | `pytest`                                               |
+| Job       | Runs after | Runs on       | Steps                                               |
+|-----------|------------|---------------|-----------------------------------------------------|
+| `lint`    | --         | every run     | `./scripts/lintme.sh -c` (all linters, check only)  |
+| `test`    | `lint`     | every run     | `pytest`                                            |
+| `version` | --         | pull requests | `./scripts/release.sh check HEAD^1` (merge commit vs base) |
+| `release` | `test`     | `main`        | `./scripts/release.sh publish`                      |
 
-* Both jobs run on `macos-latest` and `ubuntu-latest`, like the tool itself.
+* `lint` and `test` run on `macos-latest` and `ubuntu-latest`, like the
+  tool itself; `version` and `release` on `ubuntu-latest`.
+* Only `release` may write to the repo (`contents: write`: tags,
+  releases); every other job reads only. A failed release: re-run it with
+  `gh workflow run ci.yml` on `main`.
 * `.github/actions/setup-venv` builds `.venv` the way `bootstrap.sh` does:
   uv, the Python in `.python-version`, `requirements.txt`.
 * Third-party actions are pinned to commit SHAs; the tag is in a trailing
