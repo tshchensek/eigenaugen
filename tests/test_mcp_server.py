@@ -3,10 +3,10 @@ import json
 
 import pytest
 
+from eigenaugen.src.context import ContextPull, ReviewContext, Role
+from eigenaugen.src.coverage import Coverage
 from eigenaugen.src.errors import EigenaugenError
-from eigenaugen.src.github import PullRequest
 from eigenaugen.src.mcp_server import github_tools
-from eigenaugen.src.mcp_server.diffs import file_diff, section_paths, split_sections
 from eigenaugen.src.mcp_server.github_tools import GitHubTools, ToolName
 from eigenaugen.src.mcp_server.protocol import (
     SUPPORTED_PROTOCOL_VERSIONS,
@@ -14,53 +14,6 @@ from eigenaugen.src.mcp_server.protocol import (
     Server,
     Tool,
 )
-
-DIFF = """\
-diff --git a/app.py b/app.py
-index 1..2 100644
---- a/app.py
-+++ b/app.py
-@@ -1 +1 @@
--x = 1
-+x = 2
-diff --git a/my dir/a b.txt b/my dir/a b.txt
-new file mode 100644
---- /dev/null
-+++ b/my dir/a b.txt
-@@ -0,0 +1 @@
-+hi
-diff --git a/old.py b/new.py
-similarity index 100%
-rename from old.py
-rename to new.py
-diff --git a/img.png b/img.png
-Binary files a/img.png and b/img.png differ
-"""
-
-
-def test_split_sections():
-    sections = split_sections(DIFF)
-    assert len(sections) == 4
-    assert all(s.startswith("diff --git ") for s in sections)
-    assert "".join(sections) == DIFF
-
-
-def test_section_paths():
-    sections = split_sections(DIFF)
-    assert section_paths(sections[0]) == {"app.py"}
-    assert section_paths(sections[1]) == {"my dir/a b.txt"}
-    assert section_paths(sections[2]) == {"old.py", "new.py"}
-    assert section_paths(sections[3]) == {"img.png"}
-
-
-def test_file_diff_selects_section():
-    assert file_diff(DIFF, "new.py").startswith("diff --git a/old.py b/new.py")
-    assert "+hi" in file_diff(DIFF, "my dir/a b.txt")
-
-
-def test_file_diff_unknown_path_lists_changes():
-    with pytest.raises(EigenaugenError, match="app.py"):
-        file_diff(DIFF, "nope.py")
 
 
 def echo_tool(fail: Exception | None = None) -> Tool:
@@ -147,32 +100,145 @@ def test_serve_round_trip():
     assert [r["id"] for r in responses] == [1, 2]
 
 
-PR = PullRequest.from_url("https://github.com/o/r/pull/1", "a" * 40, "b" * 40)
+REVIEWED = "o/r#1"
+OTHER = "o/r#2"
+DIFF = """\
+diff --git a/app.py b/app.py
+--- a/app.py
++++ b/app.py
+@@ -1 +1 @@
+-x = 1
++x = 2
+diff --git a/yarn.lock b/yarn.lock
+--- a/yarn.lock
++++ b/yarn.lock
+@@ -1 +1 @@
+-a
++b
+"""
 
 
-def test_github_tools_cache_diff_and_page(monkeypatch):
-    calls = []
-    monkeypatch.setattr(
-        github_tools.github, "diff", lambda pr: calls.append(pr) or DIFF
+def context_pull(tmp_path, key: str, role: Role) -> ContextPull:
+    number = key.rpartition("#")[2]
+    diff_file = tmp_path / f"{number}.diff"
+    diff_file.write_text(DIFF)
+    return ContextPull(
+        key=key,
+        url=f"https://github.com/o/r/pull/{number}",
+        base_sha="a" * 40,
+        head_sha="b" * 40,
+        merge_base_sha="c" * 40,
+        behind_by=0,
+        role=role,
+        state="OPEN",
+        changed_files=2,
+        additions=2,
+        deletions=2,
+        repo_dir=str(tmp_path / "repo"),
+        diff_file=str(diff_file),
+        skim={"yarn.lock": "lockfile"},
     )
-    tools = GitHubTools(PR)
-    assert tools.get_diff({"path": "app.py"}).endswith("+x = 2\n")
-    first = tools.get_diff({"limit": 3})
-    assert first.startswith("[lines 1-3 of ")
-    assert len(calls) == 1
 
 
-@pytest.mark.parametrize("args", [{"offset": "1"}, {"limit": True}, {"path": ""}])
-def test_github_tools_validate_args(monkeypatch, args):
-    monkeypatch.setattr(github_tools.github, "diff", lambda pr: DIFF)
-    with pytest.raises(EigenaugenError):
-        GitHubTools(PR).get_diff(args)
+@pytest.fixture
+def context(tmp_path) -> ReviewContext:
+    context = ReviewContext(
+        reviewed=REVIEWED,
+        pulls={
+            REVIEWED: context_pull(tmp_path, REVIEWED, Role.REVIEWED),
+            OTHER: context_pull(tmp_path, OTHER, Role.STACK),
+        },
+        stacks=(),
+        coverage_file=str(tmp_path / "coverage.json"),
+    )
+    path = tmp_path / "context.json"
+    context.save(path)
+    return ReviewContext.load(path)
 
 
-def test_github_tools_base_file_requires_path():
-    with pytest.raises(EigenaugenError):
-        GitHubTools(PR).get_base_file({})
+def test_context_round_trips(context, tmp_path):
+    assert context.pull(None).key == REVIEWED
+    assert context.pull(OTHER).role == Role.STACK
+    with pytest.raises(
+        EigenaugenError, match="unknown PR 'x/y#3'; known PRs: o/r#1, o/r#2"
+    ):
+        context.pull("x/y#3")
 
 
-def test_tool_names_match_enum():
-    assert {t.name for t in GitHubTools(PR).tools()} == set(ToolName)
+def test_get_diff_records_reviewed_pages_only(context):
+    tools = GitHubTools(context)
+    page = tools.get_diff({"chunk": 1})
+    assert page.startswith("[o/r#1 diff chunk 1 of 2 (review), page 1 of 1]\n")
+    assert "+x = 2" in page and "yarn.lock" not in page
+    tools.get_diff({"pr": OTHER, "chunk": 2})
+    tools.get_diff({"path": "yarn.lock"})
+    recorded = Coverage.load(tools.coverage_file)
+    assert recorded.chunk_pages == {(1, 1)}
+    assert recorded.path_pages == {"yarn.lock": {1}}
+    # A restarted server (resumed session) continues the record.
+    assert GitHubTools(context).coverage == recorded
+
+
+@pytest.mark.parametrize(
+    "args,match",
+    [
+        ({}, "exactly one of"),
+        ({"chunk": 1, "path": "app.py"}, "exactly one of"),
+        ({"chunk": 3}, "no chunk 3"),
+        ({"chunk": 1, "page": 2}, "pages are 1 to 1"),
+        ({"chunk": "1"}, "must be an integer"),
+        ({"page": True, "chunk": 1}, "must be an integer"),
+        ({"path": ""}, "non-empty string"),
+        ({"pr": "x/y#1", "chunk": 1}, "unknown PR"),
+    ],
+)
+def test_get_diff_validates_args(context, args, match):
+    with pytest.raises(EigenaugenError, match=match):
+        GitHubTools(context).get_diff(args)
+
+
+def test_get_diff_index(context):
+    tools = GitHubTools(context)
+    index = tools.get_diff_index({})
+    assert index.startswith("[o/r#1 diff index, page 1 of 1]\no/r#1 diff: 2 files")
+    assert "| lockfile | `.` | 1 | +1 -1 |" in index
+    chunk = tools.get_diff_index({"pr": OTHER, "chunk": 2})
+    assert "o/r#2 diff chunk 2 of 2 (skim)" in chunk
+
+
+class FakeRepo:
+    def __init__(self, path):
+        self.path = path
+
+    def file(self, sha, path):
+        return f"{path} at {sha[0]}\n"
+
+
+def test_get_file_sides(context, monkeypatch):
+    monkeypatch.setattr(github_tools, "GitRepo", FakeRepo)
+    github_tools._file_pages.cache_clear()
+    tools = GitHubTools(context)
+    assert tools.get_file({"path": "app.py"}).endswith("app.py at b\n")
+    assert tools.get_file({"path": "app.py", "side": "base"}).endswith("at a\n")
+    merge_base = tools.get_file({"pr": OTHER, "path": "a", "side": "merge-base"})
+    assert merge_base.startswith("[`a` at o/r#2 merge-base cccccccccccc, page 1 of 1]")
+    with pytest.raises(EigenaugenError, match="side must be one of"):
+        tools.get_file({"path": "app.py", "side": "tip"})
+    with pytest.raises(EigenaugenError, match="non-empty string"):
+        tools.get_file({})
+
+
+def test_get_pull_request_adds_merge_base_and_role(context, monkeypatch):
+    monkeypatch.setattr(
+        github_tools.github,
+        "metadata",
+        lambda pr: {"number": pr.number, "pinned": {"headRefOid": pr.head_sha}},
+    )
+    data = json.loads(GitHubTools(context).get_pull_request({"pr": OTHER}))
+    assert data["number"] == 2
+    assert data["pinned"]["mergeBaseOid"] == "c" * 40
+    assert data["role"] == "stack"
+
+
+def test_tool_names_match_enum(context):
+    assert {t.name for t in GitHubTools(context).tools()} == set(ToolName)

@@ -5,16 +5,13 @@ REST reference: https://docs.github.com/en/rest
 """
 
 import json
-import os
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from pathlib import Path
 from typing import Any
-from urllib.parse import quote
 
 from eigenaugen.src import proc
-from eigenaugen.src.constants import GH_BIN, GIT_BIN
+from eigenaugen.src.constants import GH_BIN
 from eigenaugen.src.errors import EigenaugenError
 
 # All patterns are matched with fullmatch: `$` would also accept a trailing
@@ -36,6 +33,11 @@ PASTED_PR_URL_RE = re.compile(
 REPO_RE = re.compile(r"(?:[^/\s]+/)?[^/\s]+/[^/\s]+")
 PR_NUMBER_RE = re.compile(r"[1-9][0-9]*")
 TARGET_USAGE = "expected NUMBER, a pull request URL, or OWNER/REPO NUMBER"
+# A PR named in --stack or --related: [HOST/]OWNER/REPO#NUMBER.
+REPO_PR_RE = re.compile(
+    r"(?P<repo>(?:[^/\s#]+/)?[^/\s#]+/[^/\s#]+)#(?P<number>[1-9][0-9]*)"
+)
+REF_USAGE = "expected NUMBER, a pull request URL, or OWNER/REPO#NUMBER"
 # Full SHA-1 (40 hex) or SHA-256 (64 hex) object name.
 SHA_RE = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -47,6 +49,10 @@ RESOLVE_FIELDS = (
     "changedFiles",
     "additions",
     "deletions",
+    "state",
+    "baseRefName",
+    "headRefName",
+    "isCrossRepository",
 )
 METADATA_FIELDS = (
     "number",
@@ -69,33 +75,25 @@ METADATA_FIELDS = (
 PINNED_KEY = "pinned"
 
 
-class MediaType(StrEnum):
-    # https://docs.github.com/en/rest/using-the-rest-api/media-types
-    DIFF = "application/vnd.github.diff"
-    RAW = "application/vnd.github.raw+json"
-
-
 class HttpMethod(StrEnum):
     POST = "POST"
+
+
+class PullState(StrEnum):
+    # https://docs.github.com/en/graphql/reference/enums#pullrequeststate
+    OPEN = "OPEN"
+    CLOSED = "CLOSED"
+    MERGED = "MERGED"
 
 
 # https://docs.github.com/en/rest/pulls/reviews#create-a-review-for-a-pull-request
 REVIEW_EVENT_COMMENT = "COMMENT"
 STDIN_PATH = "-"
-
-# Shallow, blob-less clone: one commit's trees up front; file contents are
-# fetched lazily by checkout.
-CLONE_FLAGS = ("--depth=1", "--filter=blob:none", "--no-checkout", "--quiet")
-FETCH_FLAGS = ("--quiet", "--depth=1")
-REMOTE = "origin"
-GIT_ENV_OVERRIDES = {
-    # Reviews read source; skip downloading Git LFS objects.
-    "GIT_LFS_SKIP_SMUDGE": "1",
-    # Fail instead of hanging on a credential prompt.
-    "GIT_TERMINAL_PROMPT": "0",
-}
-PATH_SEPARATOR = "/"
-FORBIDDEN_PATH_SEGMENTS = ("", ".", "..")
+# Compare responses list commits; one is enough, the merge base comes anyway.
+# https://docs.github.com/en/rest/commits/commits#compare-two-commits
+COMPARE_QUERY = "?per_page=1"
+COMPARE_JQ = "{merge_base: .merge_base_commit.sha, behind_by: .behind_by}"
+GRAPHQL_ENDPOINT = "graphql"
 
 
 def pr_url(host: str, owner: str, repo: str, number: int | str) -> str:
@@ -109,6 +107,22 @@ class PullTarget:
 
     ref: str
     repo: str | None = None
+
+
+def parse_ref(text: str) -> PullTarget:
+    """Interpret a PR named in --stack or --related.
+
+    * NUMBER: a PR of the reviewed PR's repository (repo None)
+    * URL: a PR URL, as accepted for TARGET
+    * [HOST/]OWNER/REPO#NUMBER
+    """
+    if PR_NUMBER_RE.fullmatch(text):
+        return PullTarget(text)
+    if match := PASTED_PR_URL_RE.fullmatch(text):
+        return PullTarget(pr_url(*match.group("host", "owner", "repo", "number")))
+    if match := REPO_PR_RE.fullmatch(text):
+        return PullTarget(match["number"], match["repo"])
+    raise EigenaugenError(f"{REF_USAGE}; got {text!r}")
 
 
 def parse_target(target: str, number: str | None = None) -> PullTarget:
@@ -171,15 +185,58 @@ class PullRequest:
     def api_root(self) -> str:
         return f"repos/{self.owner}/{self.repo}"
 
+    @property
+    def key(self) -> str:
+        """How tools and reports name the PR, e.g. `octo/repo#7`."""
+        return f"{self.owner}/{self.repo}#{self.number}"
+
+    def same_repo(self, other: "PullRequest") -> bool:
+        return self.repo_spec == other.repo_spec
+
 
 @dataclass(frozen=True)
 class Resolved:
-    """A pinned PR plus the size figures shown before the review starts."""
+    """A pinned PR plus the figures and refs known when it was looked up."""
 
     pr: PullRequest
     changed_files: int
     additions: int
     deletions: int
+    state: str = PullState.OPEN
+    base_ref: str = ""
+    head_ref: str = ""
+    # Head branch in a fork: no PR in the base repository can stack on it.
+    cross_repo: bool = False
+
+    @classmethod
+    def from_json(cls, data: dict) -> "Resolved":
+        """From `gh pr view --json RESOLVE_FIELDS` output or a GraphQL
+        PullRequest node with the same fields."""
+        try:
+            pr = PullRequest.from_url(
+                data["url"], data["baseRefOid"], data["headRefOid"]
+            )
+            return cls(
+                pr,
+                data["changedFiles"],
+                data["additions"],
+                data["deletions"],
+                data["state"],
+                data["baseRefName"],
+                data["headRefName"],
+                data["isCrossRepository"],
+            )
+        except KeyError as exc:
+            raise EigenaugenError(f"pull request data lacks field {exc}") from exc
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """Where a PR branched off its base."""
+
+    merge_base_sha: str
+    # Base commits the head does not contain yet.
+    behind_by: int
 
 
 def _parse_json(text: str, source: str) -> Any:
@@ -203,12 +260,33 @@ def _api(pr: PullRequest, endpoint: str, *flags: str, **kwargs: Any) -> str:
 
 def resolve(target: PullTarget) -> Resolved:
     """Look up the PR and pin it to its current base and head commits."""
-    data = _view(target.ref, target.repo, RESOLVE_FIELDS)
-    try:
-        pr = PullRequest.from_url(data["url"], data["baseRefOid"], data["headRefOid"])
-        return Resolved(pr, data["changedFiles"], data["additions"], data["deletions"])
-    except KeyError as exc:
-        raise EigenaugenError(f"gh pr view output lacks field {exc}") from exc
+    return Resolved.from_json(_view(target.ref, target.repo, RESOLVE_FIELDS))
+
+
+def compare(pr: PullRequest) -> Comparison:
+    """Merge base of the pinned commits: the diff starts there, as GitHub's
+    three-dot compare and "Files changed" do."""
+    endpoint = f"{pr.api_root}/compare/{pr.base_sha}...{pr.head_sha}{COMPARE_QUERY}"
+    data = _parse_json(_api(pr, endpoint, "--jq", COMPARE_JQ), "gh api compare")
+    sha = data.get("merge_base")
+    if not isinstance(sha, str) or not SHA_RE.fullmatch(sha):
+        raise EigenaugenError(f"{pr.key}: compare returned no merge base: {data}")
+    return Comparison(sha, int(data.get("behind_by") or 0))
+
+
+def graphql(host: str, query: str, **variables: str | int) -> dict:
+    """Run a GraphQL QUERY on HOST; returns its `data`.
+
+    gh sends `-F` values typed (integers stay integers) and fails when the
+    response holds errors.
+    https://cli.github.com/manual/gh_api
+    """
+    argv = [GH_BIN, "api", GRAPHQL_ENDPOINT, "--hostname", host, "-f", f"query={query}"]
+    for name, value in variables.items():
+        flag = "-F" if isinstance(value, int) else "-f"
+        argv += [flag, f"{name}={value}"]
+    data = _parse_json(proc.run(argv), "gh api graphql")
+    return data.get("data") or {}
 
 
 def metadata(pr: PullRequest) -> dict:
@@ -216,56 +294,6 @@ def metadata(pr: PullRequest) -> dict:
     data = _view(pr.url, None, METADATA_FIELDS)
     data[PINNED_KEY] = {"baseRefOid": pr.base_sha, "headRefOid": pr.head_sha}
     return data
-
-
-def diff(pr: PullRequest) -> str:
-    """Unified diff of the PR between its pinned commits.
-
-    A three-dot compare diffs head against merge-base(base, head), the range
-    GitHub shows under "Files changed", and later pushes cannot change it.
-    https://docs.github.com/en/rest/commits/commits#compare-two-commits
-    """
-    endpoint = f"{pr.api_root}/compare/{pr.base_sha}...{pr.head_sha}"
-    return _api(pr, endpoint, "--header", f"Accept: {MediaType.DIFF}")
-
-
-def validate_repo_path(path: str) -> str:
-    """Return PATH if it is a plain repository-relative file path.
-
-    Rejects absolute paths, empty segments, and `.`/`..` segments so a path
-    cannot climb out of the contents endpoint into other API routes.
-    """
-    segments = path.split(PATH_SEPARATOR)
-    if any(seg in FORBIDDEN_PATH_SEGMENTS for seg in segments):
-        raise EigenaugenError(f"invalid repository path: {path!r}")
-    return path
-
-
-def base_file(pr: PullRequest, path: str) -> str:
-    """Contents of PATH at the pinned base commit.
-
-    https://docs.github.com/en/rest/repos/contents#get-repository-content
-    """
-    quoted = quote(validate_repo_path(path), safe=PATH_SEPARATOR)
-    endpoint = f"{pr.api_root}/contents/{quoted}?ref={pr.base_sha}"
-    return _api(pr, endpoint, "--header", f"Accept: {MediaType.RAW}")
-
-
-def checkout(pr: PullRequest, dest: Path) -> None:
-    """Check out the pinned head commit into DEST (a new directory).
-
-    Uses a fresh clone so the user's own clones are never touched. Fetching
-    by SHA also works for PRs from forks: GitHub keeps their commits
-    reachable from the base repository.
-    """
-    env = {**os.environ, **GIT_ENV_OVERRIDES}
-    proc.run(
-        [GH_BIN, "repo", "clone", pr.repo_spec, str(dest), "--", *CLONE_FLAGS],
-        env=env,
-    )
-    git = [GIT_BIN, "-C", str(dest)]
-    proc.run([*git, "fetch", *FETCH_FLAGS, REMOTE, pr.head_sha], env=env)
-    proc.run([*git, "checkout", "--quiet", "--detach", pr.head_sha], env=env)
 
 
 def post_review(pr: PullRequest, body: str) -> str:

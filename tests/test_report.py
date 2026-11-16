@@ -1,4 +1,6 @@
-from eigenaugen.src import report
+from eigenaugen.src import diffplan, report
+from eigenaugen.src.context import ContextPull, ReviewContext, Role, StackInfo
+from eigenaugen.src.diffplan import DiffPlan
 from eigenaugen.src.github import PullRequest
 from eigenaugen.src.reviewer import RunStats
 
@@ -39,3 +41,45 @@ def test_footer_without_subagents_or_usage():
     assert "- Models: claude-opus-5-5\n" in text
     # No session ID, no resume line.
     assert text.endswith("- Subagents: none")
+
+
+def test_scope_lines_follow_the_title():
+    scope = ["Diff: 1 file, +1 -0; 1 review page in 1 chunk; all read"]
+    text = report.footer(PR, "high", STATS, 30, scope)
+    lines = text.splitlines()
+    assert lines[1] == f"- {scope[0]}"
+    assert lines[2].startswith("- Run: ")
+
+
+def plan_of(monkeypatch, files: int, skim: dict | None = None) -> DiffPlan:
+    monkeypatch.setattr(diffplan, "PAGE_CHARS", 60)
+    diff = "".join(
+        f"diff --git a/f{i} b/f{i}\n@@ -0,0 +1 @@\n+{'x' * 20}\n" for i in range(files)
+    )
+    return DiffPlan.build(diff, skim or {})
+
+
+def test_diff_line(monkeypatch):
+    plan = plan_of(monkeypatch, 3, {"f2": "lockfile"})
+    assert report.diff_line(plan, {}) == (
+        "Diff: 3 files, +3 -0; 2 review pages in 1 chunk; 1 file skimmed; all read"
+    )
+    assert report.diff_line(plan, {1: [2]}).endswith("; UNREAD: chunk 1 page 2")
+
+
+def test_context_line():
+    def pull(key, role):
+        return ContextPull(key, "u", "a", "b", "c", 0, role, "OPEN", 1, 1, 0, "r", "d")
+
+    alone = ReviewContext("o/r#1", {"o/r#1": pull("o/r#1", Role.REVIEWED)}, (), "c")
+    assert report.context_line(alone) is None
+    stack = StackInfo("o/r#1", "github", 7, "GitHub stack #7, 2 PRs", ())
+    pulls = {
+        "o/r#1": pull("o/r#1", Role.REVIEWED),
+        "o/r#2": pull("o/r#2", Role.STACK),
+        "x/y#5": pull("x/y#5", Role.RELATED),
+    }
+    context = ReviewContext("o/r#1", pulls, (stack,), "c")
+    assert report.context_line(context) == (
+        "Context: GitHub stack #7, 2 PRs of o/r#1; related x/y#5"
+    )

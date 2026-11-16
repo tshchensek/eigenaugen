@@ -8,6 +8,8 @@
 * [Usage](#usage)
   - [Review a pull request](#review-a-pull-request)
   - [Review axes](#review-axes)
+  - [Large diffs](#large-diffs)
+  - [Stacks and related PRs](#stacks-and-related-prs)
   - [How it works](#how-it-works)
   - [Sandbox](#sandbox)
   - [Layout](#layout)
@@ -106,6 +108,11 @@ eigenaugen review OWNER/REPO 123
 eigenaugen review 123 --post          # also post it to the PR
 eigenaugen review 123 > review.md     # report on stdout, progress on stderr
 eigenaugen review -h                  # help
+
+# stacks and related PRs
+eigenaugen review 122 --stack 120,121,122,123   # stack given, bottom first
+eigenaugen review 122 --related OTHER/REPO#45   # cross-check a PR elsewhere
+eigenaugen review 122 --no-stack                # skip stack discovery
 ```
 
 | Argument / option | Default                | Meaning                                                      |
@@ -115,40 +122,90 @@ eigenaugen review -h                  # help
 | `--post`          | off                    | post the report as a COMMENT review on the reviewed commit   |
 | `--model`         | `opus` (latest stable) | model alias or ID                                            |
 | `--effort`        | `xhigh`                | `low`, `medium`, `high`, `xhigh`, `max`                      |
+| `--stack PR,...`  | discovered             | TARGET's stack, bottom first, TARGET included; replaces discovery |
+| `--related PR`    | none                   | related PR, any repository, cross-checked like a stack member; repeatable |
+| `--no-stack`      | off                    | discover no stacks (TARGET's or related PRs')                |
 
 * PR URLs may end in `/changes` or `/files` (older name of the same
   tab), a query, or a fragment, as copied from the browser.
 * `OWNER/REPO` also takes `HOST/OWNER/REPO` for GitHub Enterprise.
+* `PR` in `--stack` and `--related`: `NUMBER` (TARGET's repository), a
+  PR URL, or `[HOST/]OWNER/REPO#NUMBER`.
 
 * Needs `claude` logged in with a claude.ai account; API keys in the
   environment are ignored. Needs `gh` authenticated.
-* Exit codes: `0` report printed (or nothing to review), `1` error,
-  `130` interrupted.
+* Exit codes: `0` report printed (or nothing to review), `1` error or
+  diff not fully read (report printed, never posted), `130` interrupted.
 
 ### Review axes
 Defined, each with its checklist, only in
 [`eigenaugen/src/prompts/system.md`](eigenaugen/src/prompts/system.md#review-axes).
 `eigenaugen review -h` lists them.
 
+### Large diffs
+Every review reads the whole diff, whatever its size.
+
+| Mechanism | What it does |
+|-----------|--------------|
+| Local diff | `git diff <merge base> <head>` in the clone; no GitHub API diff or file limits |
+| Pages | at most 40,000 characters each (one tool result); a file cut by a page break resumes on the next page, which says where (old and new line numbers) |
+| Chunks | up to 4 pages: one subagent's share |
+| Skim chunks | lockfiles, vendored, generated, minified, binary files; by path, `linguist-generated` and `linguist-vendored` gitattributes read at the merge base (so a PR cannot mark its own files), never migrations or schema dumps |
+| Review mode | `direct` (up to 5 review pages): the reviewer reads every page; `delegate`: one `diff-reviewer` subagent per review chunk |
+| Completeness check | the MCP server records every page it serves; afterwards the CLI resumes the session with the unread pages, up to 3 times |
+
+A review that still left pages unread prints its report with
+`UNREAD: ...` in the footer, exits `1`, and is not posted.
+
+### Stacks and related PRs
+A review finds the stack its PR belongs to, in this order:
+1. GitHub stacked pull requests (`stack` of the GraphQL `PullRequest`):
+   https://docs.github.com/en/pull-requests/get-started/about-stacked-prs
+2. Branch chain (Graphite, git-town, spr, by hand): the PR's base branch
+   is another open PR's head branch, followed down to the default branch
+   and up through every PR stacked on top.
+3. `--stack`, which replaces discovery; for stacks neither finds (ghstack,
+   Sapling).
+
+`--related` adds PRs in any repository, for example the client of an API
+the PR changes; their stacks are found the same way. Merged and closed
+stack members are left out.
+
+| The reviewer | Rule |
+|--------------|------|
+| does not flag | issues a PR above in the stack, or a related PR, resolves; it lists them under Context instead, unless the state in between is a blocker |
+| flags | conflicts with other PRs: contracts, overlapping changes, merge and deploy order, PRs built on an outdated head of this one (axis Cross-PR conflicts) |
+| reads | other PRs with the same tools and a `pr` key, or with one `cross-checker` subagent per PR |
+
+Every PR is pinned like the reviewed one. Each repository gets one
+blob-less clone; only the reviewed PR's head is checked out.
+
 ### How it works
 1. `gh pr view` resolves the PR and pins its base and head commits.
-2. A shallow, blob-less clone of the head commit goes into a private
-   temp directory, deleted on exit. Local clones are never touched.
-3. `eigenaugen.src.agent_sdk` drives `claude` the way the Claude Agent SDK
+2. Stack discovery and `--related` add context PRs, each pinned too.
+   GitHub's compare API gives each PR's merge base.
+3. One shallow, blob-less clone per repository goes into a private
+   temp directory, deleted on exit; the reviewed head is checked out.
+   Local clones are never touched. Diffs are computed locally.
+4. `eigenaugen.src.agent_sdk` drives `claude` the way the Claude Agent SDK
    does: options become CLI flags, the prompt is a stream-json message
    on stdin, stdout is parsed into typed messages.
-4. The agent pulls PR data from `eigenaugen.src.mcp_server`, a stdio MCP
-   server the CLI runs as a subprocess. Its tools wrap `gh` and are
-   pinned to the two commits, so pushes during a review change nothing.
-5. The reviewer decides whether to start subagents and picks each one's
+5. The agent pulls PR data from `eigenaugen.src.mcp_server`, a stdio MCP
+   server the CLI runs as a subprocess. It serves the review's PRs only,
+   from the clones, pinned, so pushes during a review change nothing.
+6. The reviewer decides whether to start subagents and picks each one's
    model and effort (`haiku`, `sonnet`, `opus`), guided to the cheapest
    model that does the job. Defined roles: `standards-scout`,
-   `code-tracer`.
-6. The report goes to stdout; with `--post`, also to the PR. It ends
+   `code-tracer`, `diff-reviewer`, `cross-checker`.
+7. The CLI checks that every review page of the diff was read and
+   resumes the session if not ([Large diffs](#large-diffs)).
+8. The report goes to stdout; with `--post`, also to the PR. It ends
    with a footer:
 
    ```text
    Reviewed commit `a9d9d84ee3e8` with eigenaugen, effort `xhigh`
+   - Diff: 12 files, +300 -20; 3 review pages in 1 chunk; all read
+   - Context: GitHub stack #577, 3 PRs of octo/repo#575
    - Run: claude-opus-5-5, $2.30 (API list price), 4.2 min, 69 turns
    - Models: claude-opus-5-5 $2.21, claude-haiku-5-5 $0.09
    - Subagents: 2 (code-tracer x1, standards-scout x1)
@@ -157,10 +214,12 @@ Defined, each with its checklist, only in
 
    | Field     | Source                                                        |
    |-----------|---------------------------------------------------------------|
+   | Diff      | the reviewed diff: files, lines, review pages and chunks, skimmed files, pages left unread |
+   | Context   | stacks found or given, related PRs; omitted when there are none |
    | model     | main agent's model, resolved from the alias                   |
    | cost      | CLI's `total_cost_usd`: API list price over all models; a claude.ai plan is not billed per run |
    | time      | wall clock of the whole run: lookup, checkout, review         |
-   | turns     | agent turns, summed over the session's results                |
+   | turns     | agent turns, summed over the session's results and resumptions |
    | Models    | CLI's per-model cost: main agent, subagents, and the CLI's own helper calls (`WebSearch` runs on haiku) |
    | Subagents | subagents spawned, by type                                    |
    | resume    | the review's session ID; omitted from reviews posted with `--post` |
@@ -175,11 +234,15 @@ Defined, each with its checklist, only in
    * transcripts live in `~/.claude/projects/`, one folder per review,
      and are pruned by Claude Code's `cleanupPeriodDays` setting.
 
-| MCP tool           | Returns                                              |
-|--------------------|------------------------------------------------------|
-| `get_pull_request` | metadata: title, body, refs, labels, changed files   |
-| `get_diff`         | pinned diff, whole PR or one file, paged             |
-| `get_base_file`    | a file at the base commit, paged                     |
+Every MCP tool takes an optional `pr` key (`OWNER/REPO#NUMBER`) naming
+one of the review's PRs; default: the reviewed PR.
+
+| MCP tool           | Returns                                                          |
+|--------------------|------------------------------------------------------------------|
+| `get_pull_request` | live metadata: title, body, refs, labels, up to 100 changed files |
+| `get_diff_index`   | diff sizes, review mode, review chunks, skimmed files; one chunk's files and pages |
+| `get_diff`         | one page of the pinned diff: a chunk or one file                 |
+| `get_file`         | a file at the head, base, or merge-base commit, paged            |
 
 ### Sandbox
 PR content is untrusted and may contain prompt injection. The agent
@@ -195,6 +258,9 @@ session:
 * starts in a directory without `CLAUDE.md`; the PR's `CLAUDE.md` is
   never loaded as instructions.
 * cannot write to GitHub. Only `--post`, after the agent finishes, does.
+* reaches only the review's PRs through the MCP tools: a `pr` key not
+  in the review is refused. Diffs, context, and the page record live in
+  a data directory the file tools cannot read.
 
 Progress lines and the report are stripped of terminal control
 characters.
@@ -207,11 +273,18 @@ characters.
 | `scripts/lib/shellrc.sh`       | login shell, startup file, PATH line                 |
 | `scripts/lib/uv.sh`            | bootstrap's uv: the one on PATH, else a pinned one   |
 | `eigenaugen/src/cli.py`        | `eigenaugen review` arguments, orchestration         |
-| `eigenaugen/src/reviewer.py`   | agent options, sandbox, progress, result checks      |
+| `eigenaugen/src/prepare.py`    | gathers the review's PRs, clones, diffs, context     |
+| `eigenaugen/src/stacks.py`     | stack discovery: GitHub stacks, branch chains, `--stack` |
+| `eigenaugen/src/gitrepo.py`    | local clones: fetch, checkout, diff, files, attributes |
+| `eigenaugen/src/diffs.py`      | unified diff parsing                                 |
+| `eigenaugen/src/diffplan.py`   | pages, chunks, skim classes, review mode, diff index |
+| `eigenaugen/src/coverage.py`   | record of served pages; unread pages                 |
+| `eigenaugen/src/context.py`    | review context file shared with the MCP server       |
+| `eigenaugen/src/reviewer.py`   | agent options, sandbox, progress, result checks, resumption |
 | `eigenaugen/src/agent_sdk/`    | SDK-style client for the `claude` CLI                |
-| `eigenaugen/src/mcp_server/`   | stdio MCP server with pinned GitHub tools            |
-| `eigenaugen/src/github.py`     | `gh` wrappers: targets, resolve, diff, checkout, post |
-| `eigenaugen/src/prompts/`      | system prompt, launch prompt, subagent definitions   |
+| `eigenaugen/src/mcp_server/`   | stdio MCP server with pinned tools for the review's PRs |
+| `eigenaugen/src/github.py`     | `gh` wrappers: targets, resolve, compare, GraphQL, post |
+| `eigenaugen/src/prompts/`      | system prompt, launch and continuation prompts, subagent definitions |
 | `tests/`                       | pytest suite; no network                             |
 | `.github/workflows/ci.yml`     | CI: lint, then test                                  |
 

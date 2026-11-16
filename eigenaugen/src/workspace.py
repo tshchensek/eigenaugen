@@ -10,6 +10,8 @@ from pathlib import Path
 WORKDIR_PREFIX = "eigenaugen-"
 SESSION_DIRNAME = "session"
 CHECKOUT_DIRNAME = "src"
+DATA_DIRNAME = "data"
+REPOS_DIRNAME = "repos"
 
 
 @dataclass(frozen=True)
@@ -29,6 +31,20 @@ class Workspace:
         """Checkout of the PR head commit, granted via --add-dir."""
         return self.root / CHECKOUT_DIRNAME
 
+    @property
+    def data(self) -> Path:
+        """Review context, diffs, and the coverage record. Read by the MCP
+        server; outside the agent's file tools."""
+        return self.root / DATA_DIRNAME
+
+    @property
+    def repos(self) -> Path:
+        """Clones of other repositories with context PRs; no checkout."""
+        return self.root / REPOS_DIRNAME
+
+    def repo_clone(self, host: str, owner: str, repo: str) -> Path:
+        return self.repos / host / owner / repo
+
 
 @contextmanager
 def workspace() -> Iterator[Workspace]:
@@ -38,7 +54,8 @@ def workspace() -> Iterator[Workspace]:
     root = Path(tempfile.mkdtemp(prefix=WORKDIR_PREFIX)).resolve()
     try:
         ws = Workspace(root)
-        ws.session.mkdir()
+        for directory in (ws.session, ws.data, ws.repos):
+            directory.mkdir()
         yield ws
     finally:
         shutil.rmtree(root, ignore_errors=True)
